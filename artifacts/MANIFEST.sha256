@@ -1,0 +1,7 @@
+# SHA-256 integrity manifest for the paper-facing offline result artifacts.
+# Regenerate after any intentional artifact re-run with:
+# Get-FileHash artifacts\fast_urtc_controlled_evaluation.json,artifacts\cem_extended_10.json,artifacts\injecagent_offline_study.json -Algorithm SHA256
+
+2ECBF2577D484659B757BDCE71B43C7EFD6E3E70BA48721553341CB6C17814C8  fast_urtc_controlled_evaluation.json
+BBC89B730A37267DD230FB487C6429931363C9C29306561A7223BCB81DBF8FDB  cem_extended_10.json
+91E111BFF7312D898D19B2E7AD2BE856B18F68851E779D58F7CD030F573731DC  injecagent_offline_study.json

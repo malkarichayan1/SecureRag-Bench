@@ -1,0 +1,2 @@
+[console_scripts]
+secure-rag-eval = secure_rag_bench.evaluation.run_eval:main

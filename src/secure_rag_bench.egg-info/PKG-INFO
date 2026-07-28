@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: secure-rag-bench
+Version: 0.1.0
+Summary: Secure RAG benchmark with CaMeL dual-LLM architecture, contextual security, and adversarial evaluation
+Author: SecureRAG-Bench Contributors
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: rank-bm25>=0.2.2
+Requires-Dist: sentence-transformers>=2.2.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: httpx>=0.25.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Provides-Extra: agentdojo
+Requires-Dist: agentdojo>=0.1.0; extra == "agentdojo"

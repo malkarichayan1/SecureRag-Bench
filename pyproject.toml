@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure-rag-bench"
+version = "0.1.0"
+description = "Secure RAG benchmark with CaMeL dual-LLM architecture, contextual security, and adversarial evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SecureRAG-Bench Contributors" }]
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.24",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pypdf>=5.0",
+    "reportlab>=4.0",
+]
+agentdojo = [
+    "agentdojo>=0.1.0",
+]
+
+[project.scripts]
+secure-rag-eval = "secure_rag_bench.evaluation.run_eval:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = [
+    "error::DeprecationWarning:secure_rag_bench",
+]

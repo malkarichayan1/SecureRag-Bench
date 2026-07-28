@@ -1,0 +1,25 @@
+{
+  "ablation": {
+    "full_monitor": {
+      "utility": 1.0,
+      "asr": 0.0,
+      "defense_rate": 1.0,
+      "benign_tasks": 6,
+      "attack_tasks": 5
+    },
+    "no_provenance_enforcement": {
+      "utility": 1.0,
+      "asr": 0.2,
+      "defense_rate": 0.8,
+      "benign_tasks": 6,
+      "attack_tasks": 5
+    },
+    "no_monitor": {
+      "utility": 1.0,
+      "asr": 1.0,
+      "defense_rate": 0.0,
+      "benign_tasks": 6,
+      "attack_tasks": 5
+    }
+  }
+}
