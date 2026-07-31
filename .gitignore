@@ -23,6 +23,7 @@ models/
 runs/
 tmp/
 artifacts/local_models/
+.worktrees/
 
 # Editor and operating-system files
 .vscode/
