@@ -29,6 +29,11 @@ dev = [
 agentdojo = [
     "agentdojo>=0.1.0",
 ]
+local-injecagent = [
+    "nltk>=3.8",
+    "torch>=2.0",
+    "transformers>=4.45",
+]
 
 [project.scripts]
 secure-rag-eval = "secure_rag_bench.evaluation.run_eval:main"

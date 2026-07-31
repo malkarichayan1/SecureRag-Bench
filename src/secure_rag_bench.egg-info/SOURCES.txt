@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 src/secure_rag_bench/__init__.py
 src/secure_rag_bench.egg-info/PKG-INFO
@@ -14,7 +15,11 @@ src/secure_rag_bench/camel/privileged_llm.py
 src/secure_rag_bench/camel/provenance.py
 src/secure_rag_bench/camel/quarantined_llm.py
 src/secure_rag_bench/evaluation/__init__.py
+src/secure_rag_bench/evaluation/benchmark_adapters.py
+src/secure_rag_bench/evaluation/local_injecagent.py
 src/secure_rag_bench/evaluation/metrics.py
+src/secure_rag_bench/evaluation/native_monitor.py
+src/secure_rag_bench/evaluation/offline_study.py
 src/secure_rag_bench/evaluation/red_team.py
 src/secure_rag_bench/evaluation/run_eval.py
 src/secure_rag_bench/rag/__init__.py
@@ -24,3 +29,17 @@ src/secure_rag_bench/rag/reranker.py
 src/secure_rag_bench/security/__init__.py
 src/secure_rag_bench/security/framework.py
 src/secure_rag_bench/security/policy.py
+tests/test_ablation.py
+tests/test_benchmark_adapters.py
+tests/test_cem_engine.py
+tests/test_evaluation.py
+tests/test_interpreter.py
+tests/test_local_injecagent.py
+tests/test_native_monitor.py
+tests/test_offline_study.py
+tests/test_package_smoke.py
+tests/test_paper_pdf.py
+tests/test_provenance.py
+tests/test_retrieval.py
+tests/test_scaffold_fixtures.py
+tests/test_security_policy.py

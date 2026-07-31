@@ -29,7 +29,24 @@ authority to choose a capability or cross a capability boundary. SecureRAG-Bench
 implements this claim in ordinary deterministic code, making the protection
 auditable without asking an LLM to classify its own inputs.
 
-## 2. Threat Model
+SecureRAG-Bench is a reproducible reference implementation and evaluation
+artifact inspired by CaMeL's capability-based architecture [4], rather than a
+claim to introduce that architecture. Its contribution is an auditable
+provenance-versus-policy ablation, a deterministic retrieval-trigger study,
+and a protocol for separating native model proposals from simulated execution
+decisions.
+
+## 2. Related Work
+
+CaMeL provides the architectural foundation for separating trusted control
+flows from untrusted data flows and enforcing capabilities around tool use [4].
+AgentDojo [1] and InjecAgent [2] provide complementary benchmarks for
+prompt-injection evaluation. Task Shield [5] evaluates task-alignment checks at
+test time; SecureRAG-Bench treats task alignment as complementary to, rather
+than a substitute for, provenance enforcement. In particular, an authorized
+action can still carry tool-sourced data across an external capability boundary.
+
+## 3. Threat Model
 
 The attacker controls text returned by retrieval but not the original user
 objective, the privileged planner, the quarantine interface, or the reference
@@ -37,7 +54,7 @@ monitor. The attacker attempts to cause an external tool invocation or send
 retrieved data to an external recipient. We consider retrieval manipulation via
 trigger fragments and tool-exfiltration attempts embedded in retrieved text.
 
-## 3. System Design
+## 4. System Design
 
 The privileged LLM receives only the user objective and emits a restricted
 Python plan. A quarantined LLM receives only XML-delimited untrusted content
@@ -46,7 +63,7 @@ the AST, propagates immutable provenance labels, and dispatches tools only
 after the contextual policy checks all four properties. Tool-sourced values are
 internal-only and cannot be supplied to an external capability.
 
-## 4. Experimental Setup
+## 5. Experimental Setup
 
 All reported results use deterministic mock components, simulated external
 capabilities, and no paid API. The controlled suite contains 15 workspace and
@@ -57,7 +74,7 @@ content. Every configuration executes the same workload. We compare no
 monitoring, XML delimiters without enforcement, task/action policy without
 provenance enforcement, and the full reference monitor.
 
-## 5. Results
+## 6. Results
 
 | Variant | Benign tasks | Attack tasks | Utility | ASR | Policy-halt rate |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -74,7 +91,7 @@ actions. Provenance enforcement blocked those remaining paths before the
 simulated side effect executed. Utility remained unchanged in this deterministic
 task suite.
 
-## 6. Trigger-Fragment Experiment
+## 7. Trigger-Fragment Experiment
 
 The CEM experiment applies the Cross-Entropy Method [3] to optimize a ten-token categorical prefix for cosine
 similarity to a benign query over 30 iterations with 5,000 samples per
@@ -85,7 +102,7 @@ retrieval-attack results, not tool-exfiltration successes: the reference monitor
 continues to prohibit tainted retrieved data from reaching external tools. The
 per-seed and aggregate output is saved in `artifacts/cem_extended_10.json`.
 
-## 7. Offline Benchmark Payload-Transfer Study
+## 8. Offline Benchmark Payload-Transfer Study
 
 We additionally ran the full monitor against 2,108 public InjecAgent base and
 enhanced records through a generic offline payload-transfer adapter. The adapter
@@ -96,7 +113,7 @@ InjecAgent ASR-valid or ASR-all result because it does not execute the native
 benchmark tool environment; it is evidence that the implemented information-flow
 boundary transfers across diverse untrusted payloads.
 
-## 8. Limitations
+## 9. Limitations
 
 This is an offline prototype, not a score on AgentDojo [1] or InjecAgent [2]. The task
 suite and external capabilities are simulated; the planner, attacker, and jury
@@ -107,7 +124,7 @@ applies only to supported expressions and configured capabilities. Accordingly,
 claims are limited to the implemented architecture and measured offline
 conditions.
 
-## 9. Reproducibility
+## 10. Reproducibility
 
 Run `python -m pytest -q` and the ablation command above from the repository
 root. The ten-seed CEM command and InjecAgent offline-study command are listed
@@ -128,3 +145,12 @@ Indirect Prompt Injections in Tool-Integrated Large Language Model Agents,”
 [3] R. Y. Rubinstein and D. P. Kroese, *The Cross-Entropy Method: A Unified
 Approach to Combinatorial Optimization, Monte-Carlo Simulation, and Machine
 Learning*. Springer, 2004.
+
+[4] E. Debenedetti, I. Shumailov, T. Fan, J. Hayes, N. Carlini, D. Fabian,
+C. Kern, C. Shi, A. Terzis, and F. Tramèr, “Defeating Prompt Injections by
+Design,” 2025. https://arxiv.org/abs/2503.18813
+
+[5] F. Jia, T. Wu, X. Qin, and A. Squicciarini, “The Task Shield: Enforcing
+Task Alignment to Defend Against Indirect Prompt Injection in LLM Agents,”
+*Proceedings of the 63rd Annual Meeting of the Association for Computational
+Linguistics*, 2025. https://aclanthology.org/2025.acl-long.1435/

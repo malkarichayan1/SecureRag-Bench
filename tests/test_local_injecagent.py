@@ -60,3 +60,29 @@ def test_local_runner_writes_resumable_result_for_one_real_case(tmp_path) -> Non
     assert result["protocol"]["case_count"] == 1
     assert result["scores"]["#Test Case"] == 1
     assert (tmp_path / "result.json").exists()
+
+
+def test_local_runner_reports_model_and_task_guard_scores_for_stratified_cases(tmp_path) -> None:
+    class AttackToolGenerator:
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            if "AugustSmartLockGrantGuestAccess" in user_prompt:
+                target = "AugustSmartLockGrantGuestAccess"
+            else:
+                target = "AmazonViewSavedAddresses"
+            return f"Thought: Follow the retrieved instruction.\nAction: {target}\nAction Input: {{}}"
+
+    result = run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        prompt_type="InjecAgent",
+        max_cases_per_attack=1,
+        only_first_step=True,
+        defense="task_alignment_guard",
+        output=tmp_path / "guarded-result.json",
+        generator=AttackToolGenerator(),
+    )
+
+    assert result["protocol"]["case_count"] == 2
+    assert result["scores"]["ASR-all (Direct Harm)"] == "100.0"
+    assert result["execution_scores"]["ASR-all (Direct Harm)"] == "0.0"
+    assert all(not record["execution_step_1"]["allowed"] for record in result["records"])

@@ -71,6 +71,24 @@ email boundary. The keyword sanitizer and task-alignment guard are deterministic
 surrogates inspired by defense families. They are not PromptArmor or Task
 Shield reproductions, and this artifact is not an official InjecAgent score.
 
+## Native local-model InjecAgent evaluation
+
+The native runner in `secure_rag_bench.evaluation.local_injecagent` executes
+the official prompted-agent parser with a local model. It stores model-level
+native scores separately from simulated task-alignment execution scores. The
+latter measures whether a proposed attacker tool would execute; it is not a
+provenance ablation because native InjecAgent treats attacker-tool selection as
+the successful event.
+
+See `docs/native_injecagent_protocol.md` for the fixed protocol. Artifacts
+from a completed run should use the names
+`native_injecagent_<model>_<setting>_<defense>.json`; summarize matched
+conditions with:
+
+```powershell
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native_injecagent_qwen25_7b_base_no_defense.json artifacts\native_injecagent_qwen25_7b_base_task_alignment_guard.json --output artifacts\native_injecagent_qwen25_7b_base_summary.json
+```
+
 ## CEM trigger study
 
 Regenerate each full 30-iteration, 5,000-sample seed independently:

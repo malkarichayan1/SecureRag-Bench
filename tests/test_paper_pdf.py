@@ -23,3 +23,5 @@ def test_review_pdf_contains_current_controlled_results() -> None:
     assert "42.86%" in text
     assert "2,108" in text
     assert "seeds 1 through 10" in text
+    assert "CaMeL" in text
+    assert "Task Shield" in text

@@ -11,3 +11,10 @@ agentdojo>=0.1.0
 [dev]
 pytest>=7.4
 pytest-cov>=4.1
+pypdf>=5.0
+reportlab>=4.0
+
+[local-injecagent]
+nltk>=3.8
+torch>=2.0
+transformers>=4.45
