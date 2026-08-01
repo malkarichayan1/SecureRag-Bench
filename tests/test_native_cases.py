@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,8 @@ from secure_rag_bench.evaluation.native_cases import (
     load_native_cases,
     make_clean_control,
 )
+
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1] / "data" / "external" / "InjecAgent"
 
 
 def make_cases(*, dh: int, ds: int, tool_families: int) -> list[NativeCase]:
@@ -94,6 +97,21 @@ def injected_case() -> NativeCase:
         "Attacker Tools": ["GmailSendEmail"],
     }
     return NativeCase(attack="dh", item=item, case_id="attacked-case")
+
+
+def test_real_dataset_user_tools_all_resolve_to_a_known_toolkit() -> None:
+    """A future dataset/tools.json drift must not silently widen stratification groups."""
+    tools = json.loads((BENCHMARK_ROOT / "data" / "tools.json").read_text(encoding="utf-8"))
+    known_tools = {
+        f"{toolkit['toolkit']}{tool['name']}" for toolkit in tools for tool in toolkit["tools"]
+    }
+    for setting in ("base", "enhanced"):
+        for case in load_native_cases(BENCHMARK_ROOT, setting):
+            user_tool = case.item["User Tool"]
+            assert user_tool in known_tools, (
+                f"unmapped User Tool {user_tool!r} would silently fall back to its own "
+                "toolkit group in build_validity_split/make_clean_control"
+            )
 
 
 def test_clean_control_removes_attacker_instruction_but_preserves_schema() -> None:
