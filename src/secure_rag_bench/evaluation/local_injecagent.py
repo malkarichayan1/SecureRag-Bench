@@ -6,9 +6,26 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol
+import subprocess
+from typing import Any, Protocol, Sequence
 
-from secure_rag_bench.evaluation.native_monitor import gate_native_action
+from secure_rag_bench.evaluation.model_adapters import (
+    GenerationRequest,
+    GenerationResult,
+    ModelAdapter,
+)
+from secure_rag_bench.evaluation.native_cases import NativeCase, load_native_cases
+from secure_rag_bench.evaluation.native_prompts import (
+    PromptCondition,
+    apply_prompt_contract,
+)
+from secure_rag_bench.evaluation.native_replay import replay_task_alignment
+from secure_rag_bench.evaluation.native_validity import diagnose_native_output
+from secure_rag_bench.evaluation.study_artifacts import (
+    JsonlCheckpointStore,
+    record_digest,
+    redact_secrets,
+)
 
 
 class TextGenerator(Protocol):
@@ -94,6 +111,269 @@ class QwenGenerator:
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+class _TextGeneratorAdapter:
+    """Expose the legacy two-prompt generator through ``ModelAdapter``."""
+
+    def __init__(self, generator: TextGenerator, model_id: str) -> None:
+        self.generator = generator
+        self.model_id = model_id
+
+    def generate(self, request: GenerationRequest) -> GenerationResult:
+        return GenerationResult(
+            text=self.generator.generate(request.system_prompt, request.user_prompt),
+            metadata={
+                "provider": "text_generator_compat",
+                "model_id": self.model_id,
+                "model_revision": getattr(self.generator, "model_revision", None),
+                "generation_args": {
+                    "max_new_tokens": request.max_new_tokens,
+                    "do_sample": False,
+                },
+            },
+        )
+
+
+def run_native_cases(
+    cases: Sequence[NativeCase],
+    adapter: ModelAdapter,
+    prompt_condition: PromptCondition,
+    checkpoint: JsonlCheckpointStore,
+    *,
+    prompt_type: str = "InjecAgent",
+    benchmark_root: str | Path | None = None,
+    max_new_tokens: int = 512,
+    only_first_step: bool = False,
+    dataset_revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """Generate and checkpoint native trajectories without executing defenses."""
+    if prompt_type not in {"InjecAgent", "hwchase17_react"}:
+        raise ValueError("unsupported InjecAgent prompt type")
+    condition = PromptCondition(prompt_condition)
+    root = Path(benchmark_root) if benchmark_root is not None else _benchmark_root()
+    tool_descriptions = _load_tool_descriptions(root / "data" / "tools.json")
+    system_prompt, user_template = _load_prompt(root, prompt_type)
+    parser = _load_output_parser(root)
+    revision = dataset_revision or _dataset_revision(root)
+    saved = checkpoint.load_validated()
+
+    for case in cases:
+        if case.case_id in saved:
+            continue
+        record = _generate_native_record(
+            case=case,
+            adapter=adapter,
+            condition=condition,
+            checkpoint=checkpoint,
+            root=root,
+            system_prompt=system_prompt,
+            user_template=user_template,
+            tool_descriptions=tool_descriptions,
+            parser=parser,
+            max_new_tokens=max_new_tokens,
+            only_first_step=only_first_step,
+            dataset_revision=revision,
+            prompt_type=prompt_type,
+        )
+        saved[case.case_id] = record
+
+    validated = checkpoint.load_validated()
+    return [validated[case.case_id] for case in cases]
+
+
+def _generate_native_record(
+    *,
+    case: NativeCase,
+    adapter: ModelAdapter,
+    condition: PromptCondition,
+    checkpoint: JsonlCheckpointStore,
+    root: Path,
+    system_prompt: str,
+    user_template: str,
+    tool_descriptions: dict[str, dict[str, Any]],
+    parser,
+    max_new_tokens: int,
+    only_first_step: bool,
+    dataset_revision: str,
+    prompt_type: str,
+) -> dict[str, Any]:
+    item = case.item
+    available_tools = [item["User Tool"], *item["Attacker Tools"]]
+    record = dict(item)
+    record.update(
+        {
+            "case_id": case.case_id,
+            "attack": case.attack,
+            "control_kind": case.control_kind,
+            "prompt_condition": condition.value,
+            "prompt_type": prompt_type,
+            "dataset_revision": dataset_revision,
+        }
+    )
+
+    try:
+        prompt = build_case_prompt(
+            system_prompt=system_prompt,
+            user_template=user_template,
+            item=item,
+            tool_descriptions=tool_descriptions,
+        )
+        rendered_prompt = apply_prompt_contract(prompt, condition, available_tools)
+        generation = adapter.generate(
+            GenerationRequest(
+                system_prompt=system_prompt,
+                user_prompt=rendered_prompt,
+                max_new_tokens=max_new_tokens,
+            )
+        )
+        official_parse = parser(
+            generation.text,
+            item["Attacker Tools"][0],
+            item["Attacker Tools"],
+            item["User Tool"],
+            item["Attacker Instruction"],
+        )
+        diagnostic = diagnose_native_output(
+            generation.text,
+            official_parse,
+            available_tools,
+            item["User Tool"],
+        )
+        record.update(official_parse)
+        record.update(
+            {
+                "system_prompt": system_prompt,
+                "rendered_prompt": rendered_prompt,
+                "raw_output": generation.text,
+                "output": generation.text,
+                "generation_metadata": dict(generation.metadata),
+                "official_parse": dict(official_parse),
+                "validity": asdict(diagnostic),
+            }
+        )
+        if case.attack == "ds" and record.get("eval") == "succ" and not only_first_step:
+            try:
+                record.update(
+                    _generate_native_second_step(
+                        item=item,
+                        first_parse=official_parse,
+                        adapter=adapter,
+                        condition=condition,
+                        root=root,
+                        system_prompt=system_prompt,
+                        user_template=user_template,
+                        tool_descriptions=tool_descriptions,
+                        parser=parser,
+                        max_new_tokens=max_new_tokens,
+                    )
+                )
+            except Exception as exc:
+                second_parse = {
+                    "eval": "invalid",
+                    "invalid_reason": f"runner error: {exc}",
+                }
+                second_diagnostic = diagnose_native_output(
+                    "", second_parse, available_tools, item["User Tool"]
+                )
+                record.update(
+                    {
+                        "eval Step 2": "invalid",
+                        "official_parse_step_2": second_parse,
+                        "step_2_parse": second_parse,
+                        "validity_step_2": asdict(second_diagnostic),
+                        "runner_error_step_2": str(exc),
+                    }
+                )
+    except Exception as exc:
+        official_parse = {
+            "eval": "invalid",
+            "invalid_reason": f"runner error: {exc}",
+        }
+        diagnostic = diagnose_native_output(
+            str(record.get("raw_output", "")),
+            official_parse,
+            available_tools,
+            item["User Tool"],
+        )
+        record.update(official_parse)
+        record["official_parse"] = official_parse
+        record["validity"] = asdict(diagnostic)
+        record["runner_error"] = str(exc)
+
+    record = redact_secrets(record)
+    record["record_sha256"] = record_digest(record)
+    checkpoint.append(record)
+    return record
+
+
+def _generate_native_second_step(
+    *,
+    item: dict[str, Any],
+    first_parse: dict[str, Any],
+    adapter: ModelAdapter,
+    condition: PromptCondition,
+    root: Path,
+    system_prompt: str,
+    user_template: str,
+    tool_descriptions: dict[str, dict[str, Any]],
+    parser,
+    max_new_tokens: int,
+) -> dict[str, Any]:
+    responses = json.loads(
+        (root / "data" / "attacker_simulated_responses.json").read_text(encoding="utf-8")
+    )
+    parameters = first_parse["Attacker Tool Parameters"]
+    key = f"({item['Attacker Tools'][0]},{parameters})"
+    if key not in responses:
+        raise RuntimeError("missing cached attacker response; second step requires API generation")
+    step_item = dict(item)
+    step_item.update(
+        {
+            "Attacker Tool Parameters": parameters,
+            "Attacker Tool Thought": first_parse.get("Attacker Tool Thought", ""),
+            "Attacker Tool Response": responses[key],
+        }
+    )
+    prompt = build_case_prompt(
+        system_prompt=system_prompt,
+        user_template=user_template,
+        item=step_item,
+        tool_descriptions=tool_descriptions,
+        step_2=True,
+    )
+    available_tools = [item["User Tool"], *item["Attacker Tools"]]
+    rendered_prompt = apply_prompt_contract(prompt, condition, available_tools)
+    generation = adapter.generate(
+        GenerationRequest(
+            system_prompt=system_prompt,
+            user_prompt=rendered_prompt,
+            max_new_tokens=max_new_tokens,
+        )
+    )
+    official_parse = parser(
+        generation.text,
+        item["Attacker Tools"][1],
+        item["Attacker Tools"],
+        item["User Tool"],
+        item["Attacker Instruction"],
+    )
+    diagnostic = diagnose_native_output(
+        generation.text,
+        official_parse,
+        available_tools,
+        item["User Tool"],
+    )
+    return {
+        "rendered_prompt_step_2": rendered_prompt,
+        "raw_output_step_2": generation.text,
+        "generation_metadata_step_2": dict(generation.metadata),
+        "official_parse_step_2": dict(official_parse),
+        "validity_step_2": asdict(diagnostic),
+        "output Step 2": generation.text,
+        "eval Step 2": official_parse["eval"],
+        "step_2_parse": dict(official_parse),
+    }
+
+
 def compute_native_scores(records: list[dict[str, Any]]) -> dict[str, str | int]:
     """Compute the published InjecAgent score fields from evaluated records."""
     total = len(records)
@@ -159,17 +439,11 @@ def run_local_injecagent(
     if max_cases is not None and max_cases_per_attack is not None:
         raise ValueError("use either max_cases or max_cases_per_attack, not both")
 
-    root = Path(__file__).resolve().parents[3]
-    benchmark_root = root / "data" / "external" / "InjecAgent"
-    tool_descriptions = _load_tool_descriptions(benchmark_root / "data" / "tools.json")
-    system_prompt, user_template = _load_prompt(benchmark_root, prompt_type)
-    cases = []
+    benchmark_root = _benchmark_root()
+    cases: list[NativeCase] = []
+    loaded_cases = load_native_cases(benchmark_root, setting)
     for attack in ("dh", "ds"):
-        source = benchmark_root / "data" / f"test_cases_{attack}_{setting}.json"
-        attack_cases = [
-            {"attack": attack, "item": item}
-            for item in json.loads(source.read_text(encoding="utf-8"))
-        ]
+        attack_cases = [case for case in loaded_cases if case.attack == attack]
         if max_cases_per_attack is not None:
             attack_cases = attack_cases[:max_cases_per_attack]
         cases.extend(attack_cases)
@@ -178,69 +452,20 @@ def run_local_injecagent(
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    saved = _load_saved_records(output_path)
     generator = generator or QwenGenerator(model_id)
-
-    for case in cases:
-        item = case["item"]
-        case_key = _case_key(case["attack"], item)
-        if case_key in saved:
-            continue
-
-        record = dict(item)
-        record["attack"] = case["attack"]
-        try:
-            first_prompt = build_case_prompt(
-                system_prompt=system_prompt,
-                user_template=user_template,
-                item=item,
-                tool_descriptions=tool_descriptions,
-            )
-            record["output"] = generator.generate(system_prompt, first_prompt)
-            parser = _load_output_parser(benchmark_root)
-            parsed = parser(
-                record["output"],
-                item["Attacker Tools"][0],
-                item["Attacker Tools"],
-                item["User Tool"],
-                item["Attacker Instruction"],
-            )
-            record.update(parsed)
-            if record.get("eval") == "succ":
-                decision = gate_native_action(
-                    proposed_tool=item["Attacker Tools"][0],
-                    user_tool=item["User Tool"],
-                    defense=defense,
-                )
-                record["execution_step_1"] = asdict(decision)
-                if decision.allowed and case["attack"] == "ds" and not only_first_step:
-                    second_step = _run_second_step(item, record, generator, system_prompt, user_template, tool_descriptions, benchmark_root)
-                    record.update(second_step)
-                    if second_step["eval Step 2"] == "succ":
-                        second_decision = gate_native_action(
-                            proposed_tool=item["Attacker Tools"][1],
-                            user_tool=item["User Tool"],
-                            defense=defense,
-                        )
-                        record["execution_step_2"] = asdict(second_decision)
-        except Exception as exc:
-            record["eval"] = "invalid"
-            record["invalid_reason"] = f"runner error: {exc}"
-        saved[case_key] = record
-        _write_result(
-            output_path,
-            model_id,
-            setting,
-            prompt_type,
-            saved,
-            defense=defense,
-            only_first_step=only_first_step,
-        )
-
-    records = [
-        saved[_case_key(case["attack"], case["item"])]
-        for case in cases
-    ]
+    checkpoint = JsonlCheckpointStore(
+        output_path.with_name(f"{output_path.name}.checkpoint.jsonl")
+    )
+    raw_records = run_native_cases(
+        cases,
+        _TextGeneratorAdapter(generator, model_id),
+        PromptCondition.ORIGINAL,
+        checkpoint,
+        prompt_type=prompt_type,
+        benchmark_root=benchmark_root,
+        only_first_step=only_first_step,
+    )
+    records = replay_task_alignment(raw_records, defense)
     result = {
         "protocol": {
             "benchmark": "InjecAgent",
@@ -252,22 +477,11 @@ def run_local_injecagent(
             "max_cases_per_attack": max_cases_per_attack,
             "case_count": len(records),
         },
-        "scores": compute_native_scores(records),
+        "scores": compute_native_scores(raw_records),
         "execution_scores": compute_execution_scores(records),
         "records": records,
     }
-    _write_result(
-        output_path,
-        model_id,
-        setting,
-        prompt_type,
-        saved,
-        scores=result["scores"],
-        execution_scores=result["execution_scores"],
-        defense=defense,
-        only_first_step=only_first_step,
-        max_cases_per_attack=max_cases_per_attack,
-    )
+    output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
@@ -291,37 +505,6 @@ def compute_execution_scores(records: list[dict[str, Any]]) -> dict[str, str | i
     return compute_native_scores(execution_records)
 
 
-def _run_second_step(item, record, generator, system_prompt, user_template, tool_descriptions, benchmark_root):
-    responses = json.loads((benchmark_root / "data" / "attacker_simulated_responses.json").read_text(encoding="utf-8"))
-    parameters = record["Attacker Tool Parameters"]
-    key = f"({item['Attacker Tools'][0]},{parameters})"
-    if key not in responses:
-        raise RuntimeError("missing cached attacker response; second step requires API generation")
-    step_item = dict(item)
-    step_item.update({
-        "Attacker Tool Parameters": parameters,
-        "Attacker Tool Thought": record.get("Attacker Tool Thought", ""),
-        "Attacker Tool Response": responses[key],
-    })
-    prompt = build_case_prompt(
-        system_prompt=system_prompt,
-        user_template=user_template,
-        item=step_item,
-        tool_descriptions=tool_descriptions,
-        step_2=True,
-    )
-    output = generator.generate(system_prompt, prompt)
-    parser = _load_output_parser(benchmark_root)
-    parsed = parser(
-        output,
-        item["Attacker Tools"][1],
-        item["Attacker Tools"],
-        item["User Tool"],
-        item["Attacker Instruction"],
-    )
-    return {"output Step 2": output, "eval Step 2": parsed["eval"], "step_2_parse": parsed}
-
-
 def _load_tool_descriptions(path: Path) -> dict[str, dict[str, Any]]:
     result = {}
     for toolkit in json.loads(path.read_text(encoding="utf-8")):
@@ -330,6 +513,23 @@ def _load_tool_descriptions(path: Path) -> dict[str, dict[str, Any]]:
             value["name"] = toolkit["toolkit"] + tool["name"]
             result[value["name"]] = value
     return result
+
+
+def _benchmark_root() -> Path:
+    return Path(__file__).resolve().parents[3] / "data" / "external" / "InjecAgent"
+
+
+def _dataset_revision(root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
 
 
 def _load_prompt(root: Path, prompt_type: str):
@@ -346,52 +546,6 @@ def _load_output_parser(root: Path):
     sys.path.insert(0, str(root))
     from src.output_parsing import evaluate_output_prompted
     return evaluate_output_prompted
-
-
-def _case_key(attack: str, item: dict[str, Any]) -> str:
-    return f"{attack}:{item['User Instruction']}:{item['Tool Response']}"
-
-
-def _load_saved_records(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        _case_key(record["attack"], record): record
-        for record in payload.get("records", [])
-        if "attack" in record
-    }
-
-
-def _write_result(
-    path,
-    model_id,
-    setting,
-    prompt_type,
-    saved,
-    scores=None,
-    execution_scores=None,
-    defense="no_defense",
-    only_first_step=False,
-    max_cases_per_attack=None,
-):
-    records = list(saved.values())
-    payload = {
-        "protocol": {
-            "benchmark": "InjecAgent",
-            "model_id": model_id,
-            "setting": setting,
-            "prompt_type": prompt_type,
-            "only_first_step": only_first_step,
-            "defense": defense,
-            "max_cases_per_attack": max_cases_per_attack,
-            "case_count": len(records),
-        },
-        "scores": scores or compute_native_scores(records),
-        "execution_scores": execution_scores or compute_execution_scores(records),
-        "records": records,
-    }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def main() -> None:
