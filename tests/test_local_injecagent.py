@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +9,7 @@ import secure_rag_bench.evaluation.local_injecagent as runner_module
 from secure_rag_bench.evaluation.local_injecagent import (
     build_case_prompt,
     compute_native_scores,
+    QwenGenerator,
     run_native_cases,
     run_local_injecagent,
 )
@@ -72,6 +75,34 @@ def one_data_stealing_case():
 
 def store(tmp_path) -> JsonlCheckpointStore:
     return JsonlCheckpointStore(tmp_path / "records.jsonl")
+
+
+def fake_qwen(monkeypatch, revision: str | None) -> QwenGenerator:
+    class FakeTokenizerFactory:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            return SimpleNamespace(init_kwargs={"_commit_hash": revision})
+
+    class FakeModelFactory:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(_commit_hash=revision))
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(float16="FLOAT16"))
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForCausalLM=FakeModelFactory,
+            AutoTokenizer=FakeTokenizerFactory,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_load_output_parser",
+        lambda root: lambda *args: {"eval": "unsucc"},
+    )
+    return QwenGenerator("same-qwen-model")
 
 
 def test_runner_saves_prompt_raw_output_diagnostic_and_metadata(tmp_path) -> None:
@@ -188,6 +219,54 @@ def test_runner_rejects_checkpoint_from_different_model_revision(tmp_path) -> No
             changed,
             PromptCondition.ORIGINAL,
             checkpoint,
+            dataset_revision="dataset-a",
+        )
+
+
+def test_qwen_compatibility_rejects_changed_resolved_revision(
+    tmp_path, monkeypatch
+) -> None:
+    first = fake_qwen(monkeypatch, "resolved-rev-a")
+    changed = fake_qwen(monkeypatch, "resolved-rev-b")
+    first.generate = lambda system_prompt, user_prompt: (
+        "Final Answer: I will safely answer the user request."
+    )
+    changed.generate = lambda system_prompt, user_prompt: (
+        "Final Answer: I will safely answer the user request."
+    )
+    checkpoint = store(tmp_path)
+    run_native_cases(
+        one_case(),
+        runner_module._TextGeneratorAdapter(first, "same-qwen-model"),
+        PromptCondition.ORIGINAL,
+        checkpoint,
+        dataset_revision="dataset-a",
+    )
+
+    with pytest.raises(ValueError, match="checkpoint run identity mismatch"):
+        run_native_cases(
+            one_case(),
+            runner_module._TextGeneratorAdapter(changed, "same-qwen-model"),
+            PromptCondition.ORIGINAL,
+            checkpoint,
+            dataset_revision="dataset-a",
+        )
+
+
+def test_qwen_compatibility_requires_resolved_revision_for_resume(
+    tmp_path, monkeypatch
+) -> None:
+    unresolved = fake_qwen(monkeypatch, None)
+    unresolved.generate = lambda system_prompt, user_prompt: (
+        "Final Answer: I will safely answer the user request."
+    )
+
+    with pytest.raises(ValueError, match="resolved Qwen model revision"):
+        run_native_cases(
+            one_case(),
+            runner_module._TextGeneratorAdapter(unresolved, "same-qwen-model"),
+            PromptCondition.ORIGINAL,
+            store(tmp_path),
             dataset_revision="dataset-a",
         )
 

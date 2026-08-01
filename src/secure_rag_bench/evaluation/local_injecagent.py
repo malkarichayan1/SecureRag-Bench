@@ -76,17 +76,28 @@ def build_case_prompt(
 class QwenGenerator:
     """Qwen-compatible local generator using Transformers and GPU FP16."""
 
-    def __init__(self, model_id: str, *, max_new_tokens: int = 512) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        revision: str | None = None,
+        max_new_tokens: int = 512,
+    ) -> None:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        self.model_id = model_id
         self.max_new_tokens = max_new_tokens
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        load_kwargs = {"revision": revision} if revision is not None else {}
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, **load_kwargs)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=torch.float16,
             device_map="auto",
+            **load_kwargs,
         )
+        self.model_revision = _loaded_component_revision(self.model)
+        self.tokenizer_revision = _loaded_component_revision(self.tokenizer)
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         import torch
@@ -118,6 +129,19 @@ class _TextGeneratorAdapter:
         self.generator = generator
         self.model_id = model_id
         self.model_revision = getattr(generator, "model_revision", None)
+        self.tokenizer_revision = getattr(generator, "tokenizer_revision", None)
+
+    def checkpoint_identity(self) -> dict[str, Any]:
+        """Return stable provenance for compatibility-path checkpoint reuse."""
+        if isinstance(self.generator, QwenGenerator) and not self.model_revision:
+            raise ValueError(
+                "resumable Qwen generation requires a resolved Qwen model revision"
+            )
+        return {
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "tokenizer_revision": self.tokenizer_revision,
+        }
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         return GenerationResult(
@@ -649,6 +673,19 @@ def _build_run_identity(
         },
         "only_first_step": only_first_step,
     }
+
+
+def _loaded_component_revision(component: Any) -> str | None:
+    for source in (
+        getattr(component, "config", None),
+        getattr(component, "init_kwargs", None),
+    ):
+        if isinstance(source, Mapping) and source.get("_commit_hash"):
+            return str(source["_commit_hash"])
+        revision = getattr(source, "_commit_hash", None)
+        if revision:
+            return str(revision)
+    return None
 
 
 def _dataset_revision(root: Path) -> str:
