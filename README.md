@@ -79,25 +79,29 @@ execution decision. Install the optional local stack on a CUDA-capable host:
 .venv\Scripts\python.exe -m pip install -e ".[local-injecagent]"
 ```
 
-Run a stratified base-setting pilot with 25 direct-harm and 25 data-stealing
-cases for each condition:
+Freeze a serialized 25 direct-harm/25 data-stealing held-out split, then run a
+checkpointed pilot for the selected prompt condition:
 
 ```powershell
-.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --model Qwen/Qwen2.5-7B-Instruct --setting base --max-cases-per-attack 25 --only-first-step --defense no_defense --output artifacts\native_injecagent_qwen25_7b_base_no_defense_pilot.json
-.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --model Qwen/Qwen2.5-7B-Instruct --setting base --max-cases-per-attack 25 --only-first-step --defense task_alignment_guard --output artifacts\native_injecagent_qwen25_7b_base_task_alignment_guard_pilot.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --case-ids artifacts\native\splits\base-validity.json --checkpoint artifacts\native\checkpoints\qwen25-7b-base-pilot-strict.jsonl --only-first-step --output artifacts\native\runs\qwen25-7b-base-pilot-strict.json
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native\runs\qwen25-7b-base-pilot-strict.json --output artifacts\native\analysis\qwen25-7b-base-pilot-gate.json
 ```
 
-Then summarize conditions with:
+The output records the 90% validity decision and stable failure reasons. A full
+qualifying run generates once; defenses are then replayed from the same
+integrity-checked checkpoint without another model call:
 
 ```powershell
-.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native_injecagent_qwen25_7b_base_no_defense_pilot.json artifacts\native_injecagent_qwen25_7b_base_task_alignment_guard_pilot.json --output artifacts\native_injecagent_qwen25_7b_base_pilot_summary.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-base-full-strict.jsonl --defense no_defense --output artifacts\native\runs\qwen25-7b-base-full-no-defense.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-base-full-strict.jsonl --replay-defense task_alignment_guard --output artifacts\native\runs\qwen25-7b-base-full-task-alignment.json
 ```
 
-Read `docs/native_injecagent_protocol.md` before scaling this experiment. A
-native InjecAgent tool-choice result is not a provenance ablation; use the
-authorized-action replay artifacts for the provenance claim. For two-stage
-data-stealing cases, use the no-defense artifact for complete model-vulnerability
-scores and guarded artifacts for executed-action scores.
+Read `docs/native_injecagent_protocol.md` for the exact split, calibration,
+base/enhanced, clean-control, optional-model, gate-inspection, and aggregation
+commands. A native InjecAgent task-alignment result is not a provenance
+ablation; use the authorized-action replay artifacts for the provenance claim.
+Official model ASR, explanatory validity diagnostics, and offline execution ASR
+are reported separately.
 
 ### Free offline baseline comparison
 

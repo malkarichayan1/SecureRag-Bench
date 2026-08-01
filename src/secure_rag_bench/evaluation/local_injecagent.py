@@ -10,11 +10,20 @@ import subprocess
 from typing import Any, Mapping, Protocol, Sequence
 
 from secure_rag_bench.evaluation.model_adapters import (
+    ClaudeAdapter,
     GenerationRequest,
     GenerationResult,
     ModelAdapter,
+    OpenAICompatibleAdapter,
+    TransformersAdapter,
 )
-from secure_rag_bench.evaluation.native_cases import NativeCase, load_native_cases
+from secure_rag_bench.evaluation.native_analysis import evaluate_validity_gate
+from secure_rag_bench.evaluation.native_cases import (
+    NativeCase,
+    load_native_cases,
+    make_clean_control,
+)
+from secure_rag_bench.evaluation.native_monitor import NATIVE_DEFENSES
 from secure_rag_bench.evaluation.native_prompts import (
     PromptCondition,
     apply_prompt_contract,
@@ -530,7 +539,7 @@ def compute_native_scores(records: list[dict[str, Any]]) -> dict[str, str | int]
 
 def run_local_injecagent(
     *,
-    model_id: str,
+    model_id: str | None,
     setting: str,
     prompt_type: str = "InjecAgent",
     max_cases: int | None = None,
@@ -539,6 +548,12 @@ def run_local_injecagent(
     only_first_step: bool = False,
     defense: str = "no_defense",
     generator: TextGenerator | None = None,
+    prompt_condition: PromptCondition = PromptCondition.ORIGINAL,
+    case_ids: str | Path | Sequence[str] | None = None,
+    checkpoint: str | Path | None = None,
+    model_config: str | Path | Mapping[str, Any] | None = None,
+    clean_controls: bool = False,
+    replay_defense: str | None = None,
 ) -> dict[str, Any]:
     """Run a bounded or complete local-model InjecAgent evaluation."""
     if setting not in {"base", "enhanced"}:
@@ -547,51 +562,188 @@ def run_local_injecagent(
         raise ValueError("unsupported InjecAgent prompt type")
     if max_cases is not None and max_cases_per_attack is not None:
         raise ValueError("use either max_cases or max_cases_per_attack, not both")
+    if replay_defense is not None and replay_defense not in NATIVE_DEFENSES:
+        raise ValueError(f"unsupported native defense: {replay_defense}")
+    condition = PromptCondition(prompt_condition)
+    configuration = _load_model_configuration(model_config)
+    configured_model_id = configuration.get("model_id")
+    if model_id and configured_model_id and model_id != configured_model_id:
+        raise ValueError("--model and model-config model_id must match")
+    effective_model_id = model_id or configured_model_id
+    if not effective_model_id and replay_defense is None:
+        raise ValueError("model_id is required unless model-config supplies model_id")
 
     benchmark_root = _benchmark_root()
-    cases: list[NativeCase] = []
     loaded_cases = load_native_cases(benchmark_root, setting)
-    for attack in ("dh", "ds"):
-        attack_cases = [case for case in loaded_cases if case.attack == attack]
-        if max_cases_per_attack is not None:
-            attack_cases = attack_cases[:max_cases_per_attack]
-        cases.extend(attack_cases)
-    if max_cases is not None:
-        cases = cases[:max_cases]
+    cases = _select_native_cases(
+        loaded_cases,
+        case_ids=case_ids,
+        max_cases=max_cases,
+        max_cases_per_attack=max_cases_per_attack,
+    )
+    if clean_controls:
+        cases = [make_clean_control(case) for case in cases]
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    generator = generator or QwenGenerator(model_id)
-    checkpoint = JsonlCheckpointStore(
-        output_path.with_name(f"{output_path.name}.checkpoint.jsonl")
+    checkpoint_path = (
+        Path(checkpoint)
+        if checkpoint is not None
+        else output_path.with_name(f"{output_path.name}.checkpoint.jsonl")
     )
-    raw_records = run_native_cases(
-        cases,
-        _TextGeneratorAdapter(generator, model_id),
-        PromptCondition.ORIGINAL,
-        checkpoint,
-        prompt_type=prompt_type,
-        benchmark_root=benchmark_root,
-        only_first_step=only_first_step,
-    )
-    records = replay_task_alignment(raw_records, defense)
+    checkpoint_store = JsonlCheckpointStore(checkpoint_path)
+    if replay_defense is not None:
+        saved = checkpoint_store.load_validated()
+        missing = [case.case_id for case in cases if case.case_id not in saved]
+        if missing:
+            raise ValueError(
+                f"checkpoint is missing {len(missing)} selected case(s): {missing[0]}"
+            )
+        raw_records = [saved[case.case_id] for case in cases]
+        if not effective_model_id:
+            effective_model_id = _checkpoint_model_id(raw_records)
+        selected_defense = replay_defense
+        replay_only = True
+    else:
+        if generator is not None:
+            assert effective_model_id is not None
+            adapter: ModelAdapter = _TextGeneratorAdapter(generator, effective_model_id)
+        elif configuration:
+            adapter = _adapter_from_model_configuration(configuration)
+        else:
+            assert effective_model_id is not None
+            adapter = _TextGeneratorAdapter(QwenGenerator(effective_model_id), effective_model_id)
+        raw_records = run_native_cases(
+            cases,
+            adapter,
+            condition,
+            checkpoint_store,
+            prompt_type=prompt_type,
+            benchmark_root=benchmark_root,
+            only_first_step=only_first_step,
+        )
+        selected_defense = defense
+        replay_only = False
+    records = replay_task_alignment(raw_records, selected_defense)
+    gate_decision = asdict(evaluate_validity_gate(raw_records))
+    gate_decision["reasons"] = list(gate_decision["reasons"])
     result = {
         "protocol": {
             "benchmark": "InjecAgent",
-            "model_id": model_id,
+            "model_id": effective_model_id,
             "setting": setting,
             "prompt_type": prompt_type,
+            "prompt_condition": condition.value,
             "only_first_step": only_first_step,
-            "defense": defense,
+            "defense": selected_defense,
+            "replay_only": replay_only,
+            "clean_controls": clean_controls,
+            "checkpoint": str(checkpoint_path),
             "max_cases_per_attack": max_cases_per_attack,
             "case_count": len(records),
         },
         "scores": compute_native_scores(raw_records),
         "execution_scores": compute_execution_scores(records),
+        "gate_decision": gate_decision,
         "records": records,
     }
     output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
+
+
+def _select_native_cases(
+    loaded_cases: Sequence[NativeCase],
+    *,
+    case_ids: str | Path | Sequence[str] | None,
+    max_cases: int | None,
+    max_cases_per_attack: int | None,
+) -> list[NativeCase]:
+    if case_ids is not None:
+        if max_cases is not None or max_cases_per_attack is not None:
+            raise ValueError("case_ids cannot be combined with case limits")
+        requested = _load_case_ids(case_ids)
+        if len(requested) != len(set(requested)):
+            raise ValueError("case_ids must not contain duplicates")
+        by_id = {case.case_id: case for case in loaded_cases}
+        missing = [case_id for case_id in requested if case_id not in by_id]
+        if missing:
+            raise ValueError(f"unknown case_id: {missing[0]}")
+        return [by_id[case_id] for case_id in requested]
+
+    selected: list[NativeCase] = []
+    for attack in ("dh", "ds"):
+        attack_cases = [case for case in loaded_cases if case.attack == attack]
+        if max_cases_per_attack is not None:
+            attack_cases = attack_cases[:max_cases_per_attack]
+        selected.extend(attack_cases)
+    return selected[:max_cases] if max_cases is not None else selected
+
+
+def _load_case_ids(source: str | Path | Sequence[str]) -> list[str]:
+    if isinstance(source, (str, Path)):
+        payload = json.loads(Path(source).read_text(encoding="utf-8"))
+    else:
+        payload = list(source)
+    if isinstance(payload, Mapping):
+        payload = payload.get("held_out", payload.get("case_ids"))
+    if not isinstance(payload, list) or not all(
+        isinstance(case_id, str) and case_id for case_id in payload
+    ):
+        raise ValueError("case_ids must be a JSON list or an object with held_out/case_ids")
+    return payload
+
+
+def _load_model_configuration(
+    source: str | Path | Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if source is None:
+        return {}
+    payload: Any = (
+        json.loads(Path(source).read_text(encoding="utf-8"))
+        if isinstance(source, (str, Path))
+        else dict(source)
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("model-config must contain a JSON object")
+    return payload
+
+
+def _adapter_from_model_configuration(configuration: Mapping[str, Any]) -> ModelAdapter:
+    provider = configuration.get("provider", "transformers")
+    model_id = str(configuration["model_id"])
+    if provider == "transformers":
+        return TransformersAdapter(
+            model_id,
+            revision=configuration.get("revision"),
+            dtype=str(configuration.get("dtype", "float16")),
+            quantization=str(configuration.get("quantization", "none")),
+        )
+    if provider == "openai_compatible":
+        return OpenAICompatibleAdapter(
+            model_id,
+            str(configuration["base_url"]),
+            api_key_env=str(configuration.get("api_key_env", "OPENAI_API_KEY")),
+        )
+    if provider == "claude":
+        return ClaudeAdapter(
+            model_id,
+            base_url=str(configuration.get("base_url", "https://api.anthropic.com")),
+            api_key_env=str(configuration.get("api_key_env", "ANTHROPIC_API_KEY")),
+        )
+    raise ValueError(f"unsupported model-config provider: {provider}")
+
+
+def _checkpoint_model_id(records: Sequence[Mapping[str, Any]]) -> str:
+    if not records:
+        raise ValueError("cannot derive model_id from an empty checkpoint selection")
+    metadata = records[0].get("generation_metadata")
+    if isinstance(metadata, Mapping) and metadata.get("model_id"):
+        return str(metadata["model_id"])
+    identity = records[0].get("run_identity")
+    model = identity.get("model") if isinstance(identity, Mapping) else None
+    if isinstance(model, Mapping) and model.get("model_id"):
+        return str(model["model_id"])
+    raise ValueError("checkpoint record is missing model_id traceability")
 
 
 def compute_execution_scores(records: list[dict[str, Any]]) -> dict[str, str | int]:
@@ -717,17 +869,29 @@ def _load_output_parser(root: Path):
     return evaluate_output_prompted
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", dest="model_id", required=True)
+    parser.add_argument("--model", dest="model_id")
     parser.add_argument("--setting", choices=("base", "enhanced"), required=True)
     parser.add_argument("--prompt-type", default="InjecAgent", choices=("InjecAgent", "hwchase17_react"))
+    parser.add_argument(
+        "--prompt-condition",
+        choices=tuple(condition.value for condition in PromptCondition),
+        default=PromptCondition.ORIGINAL.value,
+    )
+    parser.add_argument("--case-ids", help="JSON list or split object containing selected case IDs")
+    parser.add_argument("--checkpoint", help="Append-safe generation checkpoint JSONL")
+    parser.add_argument("--model-config", help="JSON model-adapter configuration")
+    parser.add_argument("--clean-controls", action="store_true")
+    parser.add_argument("--replay-defense", choices=tuple(sorted(NATIVE_DEFENSES)))
     parser.add_argument("--max-cases", type=int)
     parser.add_argument("--max-cases-per-attack", type=int)
     parser.add_argument("--only-first-step", action="store_true")
     parser.add_argument("--defense", default="no_defense", choices=("no_defense", "task_alignment_guard"))
     parser.add_argument("--output", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.model_id and not args.model_config and not args.replay_defense:
+        parser.error("one of --model or --model-config is required")
     result = run_local_injecagent(
         model_id=args.model_id,
         setting=args.setting,
@@ -737,6 +901,12 @@ def main() -> None:
         output=args.output,
         only_first_step=args.only_first_step,
         defense=args.defense,
+        prompt_condition=PromptCondition(args.prompt_condition),
+        case_ids=args.case_ids,
+        checkpoint=args.checkpoint,
+        model_config=args.model_config,
+        clean_controls=args.clean_controls,
+        replay_defense=args.replay_defense,
     )
     print(json.dumps(result["scores"], indent=2))
 

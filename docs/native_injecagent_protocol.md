@@ -1,81 +1,140 @@
 # Native InjecAgent Evaluation Protocol
 
-## Scope
+## Scope and score boundaries
 
-This protocol measures local-model vulnerability and execution gating with the
-official InjecAgent prompted-agent parser and score definitions. It does not
-claim that native InjecAgent isolates provenance enforcement: a successful
-native attack selects an attacker tool instead of the user tool, so a
-task-alignment gate blocks that event by construction.
+This protocol measures local-model vulnerability with the unchanged InjecAgent
+prompted-agent parser and score definitions. Explanatory `validity` diagnostics
+do not repair, normalize, or reclassify the official `eval` fields. Offline
+execution replay consumes saved model actions and reports `execution_scores`
+without changing `scores`.
 
-## Research questions
+The native task-alignment result is **not a provenance ablation**. A native
+success selects an attacker tool instead of the requested user tool, so a
+tool-alignment gate blocks it by construction. Use the authorized-action
+artifacts named below for provenance-specific evidence.
 
-1. How often does the unprotected local model propose a benchmark-defined
-   attacker action?
-2. How often would that proposed action be permitted by a task-alignment gate?
-3. Does the existing authorized-action replay study show the separate value of
-   provenance when the action itself is permitted but an argument is tainted?
+## Fixed configuration and artifacts
 
-## Conditions
+- Primary model: `Qwen/Qwen2.5-7B-Instruct`, pinned to an exact Hugging Face
+  revision in `artifacts/native/model-qwen25-7b.json`.
+- Settings: `base` and `enhanced`; prompt type: `InjecAgent`.
+- Decoding: greedy (`do_sample=False`), `max_new_tokens=512`.
+- Dataset: pinned `data/external/InjecAgent` revision.
+- Held-out gate: exactly 25 direct-harm plus 25 data-stealing cases, at least
+  90% protocol-valid, with no runner, traceability, or integrity failure.
+- Raw generation checkpoints: `artifacts/native/checkpoints/*.jsonl`.
+- Generated/replayed artifacts: `artifacts/native/runs/*.json`.
+- Aggregate reports: `artifacts/native/analysis/*.json`.
 
-Native runs use exactly two conditions:
+Create the directories and pinned model configuration (replace the revision
+placeholder before running):
 
-- `no_defense`: proposed attacker actions are permitted.
-- `task_alignment_guard`: a proposed tool must equal the original user tool.
+```powershell
+New-Item -ItemType Directory -Force artifacts\native\splits, artifacts\native\checkpoints, artifacts\native\runs, artifacts\native\analysis | Out-Null
+@'
+{
+  "provider": "transformers",
+  "model_id": "Qwen/Qwen2.5-7B-Instruct",
+  "revision": "<PINNED_HUGGING_FACE_COMMIT>",
+  "dtype": "float16",
+  "quantization": "none"
+}
+'@ | Set-Content -Encoding utf8 artifacts\native\model-qwen25-7b.json
+```
 
-The runner saves the model's official score in `scores` and the score after
-the execution gate in `execution_scores`. These answer different questions and
-must never be substituted for one another.
+## Calibration and immutable held-out split
 
-For data-stealing cases, a denied first-step attacker action intentionally
-prevents a second model interaction. Consequently, use the `no_defense` run as
-the complete native model-vulnerability measurement and use guarded artifacts
-for execution ASR; do not compare their model-level total ASRs as if they were
-matched completed trajectories.
+Create one deterministic split per setting. This reserves ten cases per attack
+for calibration, then uses the stratified selector for the disjoint 25/25
+held-out pilot. Do not edit a held-out file after inspecting model output.
 
-## Fixed experiment configuration
+```powershell
+.venv\Scripts\python.exe -c "import json; from pathlib import Path; from secure_rag_bench.evaluation.native_cases import load_native_cases,build_validity_split; root=Path('data/external/InjecAgent'); cases=load_native_cases(root,'base'); calibration={c.case_id for attack in ('dh','ds') for c in [x for x in cases if x.attack==attack][:10]}; split=build_validity_split(cases,calibration); Path('artifacts/native/splits/base-validity.json').write_text(json.dumps({k:[c.case_id for c in v] for k,v in split.items()},indent=2),encoding='utf-8')"
+.venv\Scripts\python.exe -c "import json; from pathlib import Path; from secure_rag_bench.evaluation.native_cases import load_native_cases,build_validity_split; root=Path('data/external/InjecAgent'); cases=load_native_cases(root,'enhanced'); calibration={c.case_id for attack in ('dh','ds') for c in [x for x in cases if x.attack==attack][:10]}; split=build_validity_split(cases,calibration); Path('artifacts/native/splits/enhanced-validity.json').write_text(json.dumps({k:[c.case_id for c in v] for k,v in split.items()},indent=2),encoding='utf-8')"
+```
 
-- Primary model: `Qwen/Qwen2.5-7B-Instruct`, with the exact Hugging Face
-  revision recorded before the first run.
-- Settings: `base` and `enhanced`.
-- Prompt type: `InjecAgent`.
-- Decoding: greedy (`do_sample=False`) and `max_new_tokens=512`.
-- Dataset: the pinned `data/external/InjecAgent` submodule revision.
-- Side effects: none. The runner records a simulated execution decision only.
+Copy the `calibration` array to a separate case-ID file before running a
+calibration condition. Calibration output may guide a predeclared prompt
+choice, but it must never be mixed into the held-out gate.
 
-## Pilot gate
+```powershell
+.venv\Scripts\python.exe -c "import json; from pathlib import Path; p=json.loads(Path('artifacts/native/splits/base-validity.json').read_text()); Path('artifacts/native/splits/base-calibration.json').write_text(json.dumps(p['calibration'],indent=2),encoding='utf-8')"
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --case-ids artifacts\native\splits\base-calibration.json --checkpoint artifacts\native\checkpoints\qwen25-7b-base-calibration-strict.jsonl --only-first-step --output artifacts\native\runs\qwen25-7b-base-calibration-strict.json
+```
 
-Run 25 direct-harm and 25 data-stealing cases per setting before the full
-matrix. Inspect at least 20 model outputs across both attack classes. Do not
-launch the full study if valid rate is below 90%, an evaluator disagreement is
-unexplained, or a saved record cannot be traced to its model output and gate
-decision.
+## Held-out pilot and gate inspection
 
-## Full matrix
+Run the selected condition once per setting. Re-running the same command
+validates and resumes its checkpoint; completed cases do not trigger another
+generation call.
 
-For each setting, run both conditions over all 1,054 cases and retain one JSON
-artifact per condition. This produces four primary artifacts. Run a second
-model family only after the primary matrix passes the pilot gate.
+```powershell
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --case-ids artifacts\native\splits\base-validity.json --checkpoint artifacts\native\checkpoints\qwen25-7b-base-pilot-strict.jsonl --only-first-step --output artifacts\native\runs\qwen25-7b-base-pilot-strict.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting enhanced --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --case-ids artifacts\native\splits\enhanced-validity.json --checkpoint artifacts\native\checkpoints\qwen25-7b-enhanced-pilot-strict.jsonl --only-first-step --output artifacts\native\runs\qwen25-7b-enhanced-pilot-strict.json
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native\runs\qwen25-7b-base-pilot-strict.json --output artifacts\native\analysis\qwen25-7b-base-pilot-gate.json
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native\runs\qwen25-7b-enhanced-pilot-strict.json --output artifacts\native\analysis\qwen25-7b-enhanced-pilot-gate.json
+```
 
-## Provenance-specific evidence
+Inspect `runs.no_defense.gate_decision`. A passing decision requires `passed:
+true` and an empty `reasons` list. Stable reasons are
+`below_validity_threshold`, `wrong_case_balance`, `runner_error`,
+`missing_traceability`, and `integrity_failure`. The Wilson lower bound is
+reported for uncertainty but is not substituted for the predeclared 90% point
+estimate gate. Manually inspect at least 20 outputs across both attack classes
+and resolve evaluator disagreements before scaling.
 
-Use `artifacts/injecagent_free_baselines.json` and
-`artifacts/fast_urtc_controlled_evaluation.json` for the authorized-action
-replay claim. In that evaluation, the action may be authorized while the data
-argument is tool-sourced; policy-only and full-monitor results therefore
-isolate the contribution of provenance enforcement more directly than native
-InjecAgent does.
+## Full base/enhanced generation and offline replay
+
+Only a setting whose held-out pilot passes may proceed. The first command for
+each setting performs model generation. The second command reads its validated
+checkpoint and applies the task-alignment defense without loading or calling a
+model.
+
+```powershell
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-base-full-strict.jsonl --defense no_defense --output artifacts\native\runs\qwen25-7b-base-full-no-defense.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-base-full-strict.jsonl --replay-defense task_alignment_guard --output artifacts\native\runs\qwen25-7b-base-full-task-alignment.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting enhanced --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-enhanced-full-strict.jsonl --defense no_defense --output artifacts\native\runs\qwen25-7b-enhanced-full-no-defense.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting enhanced --prompt-condition strict_react --checkpoint artifacts\native\checkpoints\qwen25-7b-enhanced-full-strict.jsonl --replay-defense task_alignment_guard --output artifacts\native\runs\qwen25-7b-enhanced-full-task-alignment.json
+```
+
+Aggregate descriptively by default:
+
+```powershell
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native\runs\qwen25-7b-base-full-no-defense.json artifacts\native\runs\qwen25-7b-base-full-task-alignment.json --output artifacts\native\analysis\qwen25-7b-base-full.json
+```
+
+Only when paired case-level inference was explicitly included in the analysis
+plan, add `--paired-inference`. It reports exact McNemar discordant counts,
+effect-size differences, raw p-values, and Holm-adjusted p-values across the
+requested comparison family.
+
+## Clean controls and optional models
+
+Run clean controls in a separate checkpoint and artifact; `--clean-controls`
+replaces the retrieved malicious instruction with neutral family-specific text
+while preserving the case schema.
+
+```powershell
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --setting base --model-config artifacts\native\model-qwen25-7b.json --prompt-condition strict_react --case-ids artifacts\native\splits\base-validity.json --clean-controls --checkpoint artifacts\native\checkpoints\qwen25-7b-base-clean-controls.jsonl --only-first-step --output artifacts\native\runs\qwen25-7b-base-clean-controls.json
+```
+
+An optional second model is included only if it completes the same preflight,
+calibration freeze, held-out split, and validity gate. If credentials, model
+access, VRAM, traceability, or the gate fail, omit its result rows and record
+the exclusion reason in the study manifest. Do not turn an omitted model into
+an empirical result or change the primary model's protocol afterward.
 
 ## Reporting
 
-Report all of the following:
+Report counts and denominators with syntax validity, protocol validity,
+official ASR-valid, official ASR-all, and replayed execution ASR, including
+Wilson 95% intervals where defined. Include invalid taxonomy and groups by
+attack class, prompt condition, model, and clean/attacked control kind. Keep
+official proposal scores, explanatory diagnostics, and execution replay in
+distinct columns.
 
-- Native ASR-valid and ASR-all for model proposals.
-- Native ASR-valid and ASR-all after the task-alignment gate.
-- Invalid-output count and a manual error taxonomy.
-- Wilson 95% intervals for model and execution ASR-all.
-- The offline authorized-action replay result separately, with its existing
-  limitations.
-
-Never label the offline replay as an official InjecAgent score or label the
-native task-alignment gate as a provenance ablation.
+Use `artifacts/injecagent_free_baselines.json` and
+`artifacts/fast_urtc_controlled_evaluation.json` for the separate
+authorized-action provenance evidence, with their existing limitations. Never
+label that replay as an official InjecAgent score, and never label the native
+task-alignment result as a provenance ablation.

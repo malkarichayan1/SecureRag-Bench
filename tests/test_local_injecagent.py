@@ -551,3 +551,111 @@ def test_local_runner_reports_model_and_task_guard_scores_for_stratified_cases(t
     assert result["scores"]["ASR-all (Direct Harm)"] == "100.0"
     assert result["execution_scores"]["ASR-all (Direct Harm)"] == "0.0"
     assert all(not record["execution_step_1"]["allowed"] for record in result["records"])
+
+
+def test_local_runner_uses_serialized_split_resumes_and_replays_offline(tmp_path) -> None:
+    case = one_case()[0]
+    case_ids = tmp_path / "pilot-split.json"
+    case_ids.write_text(json.dumps({"held_out": [case.case_id]}), encoding="utf-8")
+    checkpoint = tmp_path / "pilot.checkpoint.jsonl"
+
+    class AttackGenerator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            self.calls += 1
+            return (
+                "Thought: Follow the retrieved instruction.\n"
+                f"Action: {case.item['Attacker Tools'][0]}\n"
+                "Action Input: {}"
+            )
+
+    generator = AttackGenerator()
+    first = run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        prompt_condition=PromptCondition.STRICT_REACT,
+        output=tmp_path / "pilot.json",
+        only_first_step=True,
+        generator=generator,
+    )
+    resumed = run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        prompt_condition=PromptCondition.STRICT_REACT,
+        output=tmp_path / "pilot-resumed.json",
+        only_first_step=True,
+        generator=generator,
+    )
+    replayed = run_local_injecagent(
+        model_id=None,
+        setting="base",
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        prompt_condition=PromptCondition.STRICT_REACT,
+        replay_defense="task_alignment_guard",
+        output=tmp_path / "pilot-guarded.json",
+        only_first_step=True,
+        generator=generator,
+    )
+
+    assert generator.calls == 1
+    assert first["records"][0]["case_id"] == case.case_id
+    assert resumed["records"][0]["raw_output"] == first["records"][0]["raw_output"]
+    assert first["protocol"]["prompt_condition"] == "strict_react"
+    assert first["gate_decision"]["reasons"] == ["wrong_case_balance"]
+    assert replayed["protocol"]["replay_only"] is True
+    assert replayed["records"][0]["execution_step_1"]["allowed"] is False
+
+
+def test_cli_accepts_study_flags_and_model_config_without_legacy_model(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"scores": {"#Test Case": 0}, "gate_decision": {"passed": False}}
+
+    model_config = tmp_path / "model.json"
+    model_config.write_text(
+        json.dumps({"provider": "transformers", "model_id": "fake/configured"}),
+        encoding="utf-8",
+    )
+    case_ids = tmp_path / "cases.json"
+    case_ids.write_text(json.dumps(["case-a"]), encoding="utf-8")
+    monkeypatch.setattr(runner_module, "run_local_injecagent", fake_run)
+
+    runner_module.main(
+        [
+            "--setting",
+            "base",
+            "--prompt-condition",
+            "structured_single_action",
+            "--case-ids",
+            str(case_ids),
+            "--checkpoint",
+            str(tmp_path / "records.jsonl"),
+            "--model-config",
+            str(model_config),
+            "--clean-controls",
+            "--replay-defense",
+            "no_defense",
+            "--output",
+            str(tmp_path / "result.json"),
+        ]
+    )
+
+    assert captured["model_id"] is None
+    assert captured["prompt_condition"] is PromptCondition.STRUCTURED_SINGLE_ACTION
+    assert captured["case_ids"] == str(case_ids)
+    assert captured["checkpoint"] == str(tmp_path / "records.jsonl")
+    assert captured["model_config"] == str(model_config)
+    assert captured["clean_controls"] is True
+    assert captured["replay_defense"] == "no_defense"
+    assert '"#Test Case": 0' in capsys.readouterr().out
