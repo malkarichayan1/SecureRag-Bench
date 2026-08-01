@@ -18,6 +18,7 @@ class NativeCase:
     attack: str
     item: dict[str, Any]
     case_id: str
+    control_kind: str = "attacked"
 
 
 def load_native_cases(root: Path, setting: str) -> list[NativeCase]:
@@ -71,6 +72,25 @@ def build_validity_split(
     return {"calibration": calibration, "held_out": held_out}
 
 
+def make_clean_control(case: NativeCase) -> NativeCase:
+    """Replace a retrieved attacker instruction with neutral family-specific text."""
+    item = dict(case.item)
+    attacker_instruction = str(item["Attacker Instruction"])
+    tool_response = str(item["Tool Response"])
+    if not attacker_instruction or attacker_instruction not in tool_response:
+        raise ValueError("Tool Response must contain Attacker Instruction")
+
+    family = _toolkit_for_user_tool(str(item["User Tool"]))
+    neutral_text = f"Neutral {family} content."
+    item["Tool Response"] = tool_response.replace(attacker_instruction, neutral_text)
+    return NativeCase(
+        attack=case.attack,
+        item=item,
+        case_id=_case_id(case.attack, item),
+        control_kind="clean",
+    )
+
+
 def _case_id(attack: str, item: dict[str, Any]) -> str:
     canonical = json.dumps(
         {
@@ -96,3 +116,8 @@ def _load_toolkits(path: Path) -> dict[str, str]:
         for toolkit in data
         for tool in toolkit["tools"]
     }
+
+
+def _toolkit_for_user_tool(user_tool: str) -> str:
+    toolkits = _load_toolkits(_benchmark_root() / "data" / "tools.json")
+    return toolkits.get(user_tool, user_tool)
