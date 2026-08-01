@@ -33,6 +33,8 @@ local-injecagent = [
     "nltk>=3.8",
     "torch>=2.0",
     "transformers>=4.45",
+    "accelerate>=0.34",
+    "bitsandbytes>=0.43",
 ]
 
 [project.scripts]

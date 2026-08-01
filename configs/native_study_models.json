@@ -1,0 +1,59 @@
+{
+  "models": [
+    {
+      "name": "qwen-7b",
+      "provider": "transformers",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "parameters_b": 7.61,
+      "dtype": "float16",
+      "quantization": "fp16",
+      "tier": "primary",
+      "enabled": true
+    },
+    {
+      "name": "qwen-14b",
+      "provider": "transformers",
+      "model_id": "Qwen/Qwen2.5-14B-Instruct",
+      "parameters_b": 14.7,
+      "dtype": "float16",
+      "quantization": "fp16",
+      "tier": "primary",
+      "enabled": true
+    },
+    {
+      "name": "llama-3.1-8b",
+      "provider": "transformers",
+      "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "parameters_b": 8.03,
+      "dtype": "float16",
+      "quantization": "fp16",
+      "tier": "primary",
+      "enabled": true
+    },
+    {
+      "name": "qwen-32b-4bit",
+      "provider": "transformers",
+      "model_id": "Qwen/Qwen2.5-32B-Instruct",
+      "parameters_b": 32.5,
+      "dtype": "float16",
+      "quantization": "4bit",
+      "tier": "conditional",
+      "enabled": true
+    },
+    {
+      "name": "llama-3.1-70b-endpoint",
+      "provider": "openai_compatible",
+      "model_id": "meta-llama/Llama-3.1-70B-Instruct",
+      "parameters_b": 70.6,
+      "tier": "optional",
+      "enabled": false
+    },
+    {
+      "name": "claude",
+      "provider": "claude",
+      "model_id": "claude-3-5-sonnet-latest",
+      "tier": "optional",
+      "enabled": false
+    }
+  ]
+}
