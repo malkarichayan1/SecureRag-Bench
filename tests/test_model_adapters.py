@@ -1,5 +1,6 @@
 import json
 import sys
+import traceback
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,7 +55,10 @@ def test_endpoint_adapter_returns_request_metadata() -> None:
         return httpx.Response(
             200,
             headers={"x-request-id": "req_123"},
-            json={"choices": [{"message": {"content": "model output"}}]},
+            json={
+                "model": "provider-pinned-70b-20260801",
+                "choices": [{"message": {"content": "model output"}}],
+            },
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handle))
@@ -65,6 +69,8 @@ def test_endpoint_adapter_returns_request_metadata() -> None:
     assert result.text == "model output"
     assert result.metadata["provider_request_id"] == "req_123"
     assert result.metadata["model_id"] == "optional-70b"
+    assert result.metadata["requested_model_id"] == "optional-70b"
+    assert result.metadata["provider_model_id"] == "provider-pinned-70b-20260801"
     assert observed == {
         "url": "https://example.test/v1/chat/completions",
         "authorization": "Bearer token",
@@ -97,6 +103,28 @@ def test_endpoint_adapter_redacts_authorization_from_errors() -> None:
     assert "[REDACTED]" in str(exc_info.value)
 
 
+def test_endpoint_adapter_error_traceback_has_no_credential_cause() -> None:
+    secret = "openai-live-secret"
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.RequestError(f"Authorization: Bearer {secret}", request=request)
+
+    adapter = OpenAICompatibleAdapter(
+        "optional-70b",
+        "https://example.test/v1",
+        secret,
+        client=httpx.Client(transport=httpx.MockTransport(fail)),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        adapter.generate(request())
+
+    formatted = "".join(traceback.format_exception(exc_info.value))
+    assert secret not in formatted
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
 def test_claude_adapter_uses_messages_endpoint_without_sdk() -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "https://anthropic.example/v1/messages"
@@ -112,7 +140,10 @@ def test_claude_adapter_uses_messages_endpoint_without_sdk() -> None:
         return httpx.Response(
             200,
             headers={"request-id": "claude_req_456"},
-            json={"content": [{"type": "text", "text": "claude output"}]},
+            json={
+                "model": "claude-3-5-sonnet-20260801",
+                "content": [{"type": "text", "text": "claude output"}],
+            },
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handle))
@@ -122,6 +153,30 @@ def test_claude_adapter_uses_messages_endpoint_without_sdk() -> None:
 
     assert result.text == "claude output"
     assert result.metadata["provider_request_id"] == "claude_req_456"
+    assert result.metadata["requested_model_id"] == "optional-claude"
+    assert result.metadata["provider_model_id"] == "claude-3-5-sonnet-20260801"
+
+
+def test_claude_adapter_error_traceback_has_no_credential_cause() -> None:
+    secret = "claude-live-secret"
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.RequestError(f"x-api-key: {secret}", request=request)
+
+    adapter = ClaudeAdapter(
+        "optional-claude",
+        secret,
+        base_url="https://anthropic.example",
+        client=httpx.Client(transport=httpx.MockTransport(fail)),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        adapter.generate(request())
+
+    formatted = "".join(traceback.format_exception(exc_info.value))
+    assert secret not in formatted
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 def test_transformers_adapter_records_greedy_generation_metadata(monkeypatch) -> None:

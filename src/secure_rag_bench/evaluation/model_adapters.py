@@ -183,6 +183,8 @@ class OpenAICompatibleAdapter:
             metadata={
                 "provider": "openai_compatible",
                 "model_id": self.model_id,
+                "requested_model_id": self.model_id,
+                "provider_model_id": data.get("model"),
                 "endpoint": self.base_url,
                 "provider_request_id": response.headers.get("x-request-id") or data.get("id"),
                 "generation_args": {"max_tokens": request.max_new_tokens, "temperature": 0},
@@ -192,17 +194,20 @@ class OpenAICompatibleAdapter:
     def _post(
         self, url: str, *, headers: Mapping[str, str], payload: Mapping[str, Any]
     ) -> httpx.Response:
+        failure: str | None = None
         try:
             response = self._client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            return response
         except httpx.HTTPError as exc:
             body = ""
             if isinstance(exc, httpx.HTTPStatusError):
                 body = exc.response.text
-            raise RuntimeError(
-                _redact_error(f"endpoint request failed: {exc}; {body}", self.api_key)
-            ) from exc
+            failure = _redact_error(
+                f"endpoint request failed: {exc}; {body}", self.api_key
+            )
+        if failure is not None:
+            raise RuntimeError(failure)
+        return response
 
 
 class ClaudeAdapter:
@@ -236,6 +241,7 @@ class ClaudeAdapter:
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
         }
+        failure: str | None = None
         try:
             response = self._client.post(
                 f"{self.base_url}/v1/messages", headers=headers, json=payload
@@ -243,9 +249,9 @@ class ClaudeAdapter:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             body = exc.response.text if isinstance(exc, httpx.HTTPStatusError) else ""
-            raise RuntimeError(
-                _redact_error(f"Claude request failed: {exc}; {body}", self.api_key)
-            ) from exc
+            failure = _redact_error(f"Claude request failed: {exc}; {body}", self.api_key)
+        if failure is not None:
+            raise RuntimeError(failure)
         data = _response_json(response, "Claude")
         content = data.get("content") if isinstance(data, dict) else None
         text_parts = [
@@ -260,6 +266,8 @@ class ClaudeAdapter:
             metadata={
                 "provider": "claude",
                 "model_id": self.model_id,
+                "requested_model_id": self.model_id,
+                "provider_model_id": data.get("model"),
                 "endpoint": self.base_url,
                 "provider_request_id": response.headers.get("request-id") or data.get("id"),
                 "generation_args": {"max_tokens": request.max_new_tokens, "temperature": 0},
