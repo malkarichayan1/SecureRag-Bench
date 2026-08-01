@@ -95,6 +95,36 @@ External benchmark runs and an API-backed jury require their own credentials,
 tool mappings, and recorded experiment configuration. They are intentionally
 not invoked by the offline test suite.
 
+### Native local-model InjecAgent protocol
+
+The native prompted-agent runner uses InjecAgent's parser and score fields but
+records the model's proposed attack separately from a simulated task-alignment
+execution decision. Install the optional local stack on a CUDA-capable host:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[local-injecagent]"
+```
+
+Run a stratified base-setting pilot with 25 direct-harm and 25 data-stealing
+cases for each condition:
+
+```powershell
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --model Qwen/Qwen2.5-7B-Instruct --setting base --max-cases-per-attack 25 --only-first-step --defense no_defense --output artifacts\native_injecagent_qwen25_7b_base_no_defense_pilot.json
+.venv\Scripts\python.exe -m secure_rag_bench.evaluation.local_injecagent --model Qwen/Qwen2.5-7B-Instruct --setting base --max-cases-per-attack 25 --only-first-step --defense task_alignment_guard --output artifacts\native_injecagent_qwen25_7b_base_task_alignment_guard_pilot.json
+```
+
+Then summarize conditions with:
+
+```powershell
+.venv\Scripts\python.exe scripts\analyze_native_injecagent.py artifacts\native_injecagent_qwen25_7b_base_no_defense_pilot.json artifacts\native_injecagent_qwen25_7b_base_task_alignment_guard_pilot.json --output artifacts\native_injecagent_qwen25_7b_base_pilot_summary.json
+```
+
+Read `docs/native_injecagent_protocol.md` before scaling this experiment. A
+native InjecAgent tool-choice result is not a provenance ablation; use the
+authorized-action replay artifacts for the provenance claim. For two-stage
+data-stealing cases, use the no-defense artifact for complete model-vulnerability
+scores and guarded artifacts for executed-action scores.
+
 ### Free offline baseline comparison
 
 The local InjecAgent files can also be evaluated across six deterministic

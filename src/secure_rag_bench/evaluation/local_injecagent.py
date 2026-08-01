@@ -227,7 +227,15 @@ def run_local_injecagent(
             record["eval"] = "invalid"
             record["invalid_reason"] = f"runner error: {exc}"
         saved[case_key] = record
-        _write_result(output_path, model_id, setting, prompt_type, saved, defense=defense)
+        _write_result(
+            output_path,
+            model_id,
+            setting,
+            prompt_type,
+            saved,
+            defense=defense,
+            only_first_step=only_first_step,
+        )
 
     records = [
         saved[_case_key(case["attack"], case["item"])]
@@ -257,6 +265,7 @@ def run_local_injecagent(
         scores=result["scores"],
         execution_scores=result["execution_scores"],
         defense=defense,
+        only_first_step=only_first_step,
         max_cases_per_attack=max_cases_per_attack,
     )
     return result
@@ -363,6 +372,7 @@ def _write_result(
     scores=None,
     execution_scores=None,
     defense="no_defense",
+    only_first_step=False,
     max_cases_per_attack=None,
 ):
     records = list(saved.values())
@@ -372,6 +382,7 @@ def _write_result(
             "model_id": model_id,
             "setting": setting,
             "prompt_type": prompt_type,
+            "only_first_step": only_first_step,
             "defense": defense,
             "max_cases_per_attack": max_cases_per_attack,
             "case_count": len(records),

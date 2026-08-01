@@ -25,3 +25,5 @@ def test_review_pdf_contains_current_controlled_results() -> None:
     assert "seeds 1 through 10" in text
     assert "CaMeL" in text
     assert "Task Shield" in text
+    assert "tainted transfer amount" in text
+    assert "Result-Artifact Map" in text

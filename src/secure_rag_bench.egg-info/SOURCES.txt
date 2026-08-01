@@ -18,6 +18,7 @@ src/secure_rag_bench/evaluation/__init__.py
 src/secure_rag_bench/evaluation/benchmark_adapters.py
 src/secure_rag_bench/evaluation/local_injecagent.py
 src/secure_rag_bench/evaluation/metrics.py
+src/secure_rag_bench/evaluation/native_analysis.py
 src/secure_rag_bench/evaluation/native_monitor.py
 src/secure_rag_bench/evaluation/offline_study.py
 src/secure_rag_bench/evaluation/red_team.py
@@ -35,6 +36,7 @@ tests/test_cem_engine.py
 tests/test_evaluation.py
 tests/test_interpreter.py
 tests/test_local_injecagent.py
+tests/test_native_analysis.py
 tests/test_native_monitor.py
 tests/test_offline_study.py
 tests/test_package_smoke.py

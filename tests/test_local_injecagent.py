@@ -1,3 +1,5 @@
+import json
+
 from secure_rag_bench.evaluation.local_injecagent import (
     build_case_prompt,
     compute_native_scores,
@@ -59,7 +61,10 @@ def test_local_runner_writes_resumable_result_for_one_real_case(tmp_path) -> Non
 
     assert result["protocol"]["case_count"] == 1
     assert result["scores"]["#Test Case"] == 1
-    assert (tmp_path / "result.json").exists()
+    output = tmp_path / "result.json"
+    assert output.exists()
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["protocol"]["only_first_step"] is True
 
 
 def test_local_runner_reports_model_and_task_guard_scores_for_stratified_cases(tmp_path) -> None:
