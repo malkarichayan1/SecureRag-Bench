@@ -124,6 +124,17 @@ access, VRAM, traceability, or the gate fail, omit its result rows and record
 the exclusion reason in the study manifest. Do not turn an omitted model into
 an empirical result or change the primary model's protocol afterward.
 
+Record an exclusion as a hashed study manifest at the exact artifact path
+below. Replace the example model and reason with the observed preflight result:
+
+```powershell
+.venv\Scripts\python.exe -c "from pathlib import Path; from secure_rag_bench.evaluation.study_artifacts import StudyManifest; StudyManifest({'stage':'native_optional_model_preflight','models':{'optional/model':{'status':'excluded','reason':'insufficient_vram'}}}).write(Path('artifacts/native/analysis/optional-model-exclusion.manifest.json'))"
+```
+
+The command creates
+`artifacts/native/analysis/optional-model-exclusion.manifest.json` with the
+payload and its SHA-256 integrity digest; retain it with the aggregate reports.
+
 ## Reporting
 
 Report counts and denominators with syntax validity, protocol validity,

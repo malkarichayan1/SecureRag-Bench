@@ -17,7 +17,10 @@ from secure_rag_bench.evaluation.model_adapters import (
     OpenAICompatibleAdapter,
     TransformersAdapter,
 )
-from secure_rag_bench.evaluation.native_analysis import evaluate_validity_gate
+from secure_rag_bench.evaluation.native_analysis import (
+    evaluate_validity_gate,
+    validated_run_identity,
+)
 from secure_rag_bench.evaluation.native_cases import (
     NativeCase,
     load_native_cases,
@@ -178,11 +181,16 @@ def run_native_cases(
     max_new_tokens: int = 512,
     only_first_step: bool = False,
     dataset_revision: str | None = None,
+    setting: str = "unspecified",
 ) -> list[dict[str, Any]]:
     """Generate and checkpoint native trajectories without executing defenses."""
     if prompt_type not in {"InjecAgent", "hwchase17_react"}:
         raise ValueError("unsupported InjecAgent prompt type")
     condition = PromptCondition(prompt_condition)
+    control_kinds = {case.control_kind for case in cases}
+    if len(control_kinds) > 1:
+        raise ValueError("one native run cannot mix control kinds")
+    control_kind = next(iter(control_kinds), "attacked")
     root = Path(benchmark_root) if benchmark_root is not None else _benchmark_root()
     tool_descriptions = _load_tool_descriptions(root / "data" / "tools.json")
     system_prompt, user_template = _load_prompt(root, prompt_type)
@@ -195,6 +203,8 @@ def run_native_cases(
         dataset_revision=revision,
         max_new_tokens=max_new_tokens,
         only_first_step=only_first_step,
+        setting=setting,
+        control_kind=control_kind,
     )
     run_identity_sha256 = record_digest(run_identity)
     saved = checkpoint.load_validated()
@@ -540,31 +550,26 @@ def compute_native_scores(records: list[dict[str, Any]]) -> dict[str, str | int]
 def run_local_injecagent(
     *,
     model_id: str | None,
-    setting: str,
-    prompt_type: str = "InjecAgent",
+    setting: str | None,
+    prompt_type: str | None = None,
     max_cases: int | None = None,
     max_cases_per_attack: int | None = None,
     output: str | Path,
-    only_first_step: bool = False,
+    only_first_step: bool | None = None,
     defense: str = "no_defense",
     generator: TextGenerator | None = None,
-    prompt_condition: PromptCondition = PromptCondition.ORIGINAL,
+    prompt_condition: PromptCondition | None = None,
     case_ids: str | Path | Sequence[str] | None = None,
     checkpoint: str | Path | None = None,
     model_config: str | Path | Mapping[str, Any] | None = None,
-    clean_controls: bool = False,
+    clean_controls: bool | None = None,
     replay_defense: str | None = None,
 ) -> dict[str, Any]:
     """Run a bounded or complete local-model InjecAgent evaluation."""
-    if setting not in {"base", "enhanced"}:
-        raise ValueError("setting must be 'base' or 'enhanced'")
-    if prompt_type not in {"InjecAgent", "hwchase17_react"}:
-        raise ValueError("unsupported InjecAgent prompt type")
     if max_cases is not None and max_cases_per_attack is not None:
         raise ValueError("use either max_cases or max_cases_per_attack, not both")
     if replay_defense is not None and replay_defense not in NATIVE_DEFENSES:
         raise ValueError(f"unsupported native defense: {replay_defense}")
-    condition = PromptCondition(prompt_condition)
     configuration = _load_model_configuration(model_config)
     configured_model_id = configuration.get("model_id")
     if model_id and configured_model_id and model_id != configured_model_id:
@@ -572,17 +577,6 @@ def run_local_injecagent(
     effective_model_id = model_id or configured_model_id
     if not effective_model_id and replay_defense is None:
         raise ValueError("model_id is required unless model-config supplies model_id")
-
-    benchmark_root = _benchmark_root()
-    loaded_cases = load_native_cases(benchmark_root, setting)
-    cases = _select_native_cases(
-        loaded_cases,
-        case_ids=case_ids,
-        max_cases=max_cases,
-        max_cases_per_attack=max_cases_per_attack,
-    )
-    if clean_controls:
-        cases = [make_clean_control(case) for case in cases]
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -594,17 +588,72 @@ def run_local_injecagent(
     checkpoint_store = JsonlCheckpointStore(checkpoint_path)
     if replay_defense is not None:
         saved = checkpoint_store.load_validated()
+        identity = validated_run_identity(list(saved.values()))
+        effective_model_id = _match_replay_value(
+            "model_id",
+            effective_model_id,
+            identity["model"]["model_id"],
+        )
+        _validate_replay_model_configuration(configuration, identity)
+        setting_value = _match_replay_value("setting", setting, identity["setting"])
+        prompt_type_value = _match_replay_value(
+            "prompt_type", prompt_type, identity["prompt_type"]
+        )
+        requested_condition = (
+            PromptCondition(prompt_condition).value
+            if prompt_condition is not None
+            else None
+        )
+        condition_value = _match_replay_value(
+            "prompt_condition", requested_condition, identity["prompt_condition"]
+        )
+        condition = PromptCondition(condition_value)
+        only_first_step_value = _match_replay_value(
+            "only_first_step", only_first_step, identity["only_first_step"]
+        )
+        expected_clean_controls = identity["control_kind"] == "clean"
+        clean_controls_value = _match_replay_value(
+            "control_kind", clean_controls, expected_clean_controls
+        )
+        benchmark_root = _benchmark_root()
+        loaded_cases = load_native_cases(benchmark_root, setting_value)
+        cases = _select_native_cases(
+            loaded_cases,
+            case_ids=case_ids,
+            max_cases=max_cases,
+            max_cases_per_attack=max_cases_per_attack,
+        )
+        if clean_controls_value:
+            cases = [make_clean_control(case) for case in cases]
         missing = [case.case_id for case in cases if case.case_id not in saved]
         if missing:
             raise ValueError(
                 f"checkpoint is missing {len(missing)} selected case(s): {missing[0]}"
             )
         raw_records = [saved[case.case_id] for case in cases]
-        if not effective_model_id:
-            effective_model_id = _checkpoint_model_id(raw_records)
+        validated_run_identity(raw_records)
         selected_defense = replay_defense
         replay_only = True
     else:
+        if setting not in {"base", "enhanced"}:
+            raise ValueError("setting must be 'base' or 'enhanced'")
+        setting_value = setting
+        prompt_type_value = prompt_type or "InjecAgent"
+        if prompt_type_value not in {"InjecAgent", "hwchase17_react"}:
+            raise ValueError("unsupported InjecAgent prompt type")
+        condition = PromptCondition(prompt_condition or PromptCondition.ORIGINAL)
+        only_first_step_value = bool(only_first_step)
+        clean_controls_value = bool(clean_controls)
+        benchmark_root = _benchmark_root()
+        loaded_cases = load_native_cases(benchmark_root, setting_value)
+        cases = _select_native_cases(
+            loaded_cases,
+            case_ids=case_ids,
+            max_cases=max_cases,
+            max_cases_per_attack=max_cases_per_attack,
+        )
+        if clean_controls_value:
+            cases = [make_clean_control(case) for case in cases]
         if generator is not None:
             assert effective_model_id is not None
             adapter: ModelAdapter = _TextGeneratorAdapter(generator, effective_model_id)
@@ -618,9 +667,10 @@ def run_local_injecagent(
             adapter,
             condition,
             checkpoint_store,
-            prompt_type=prompt_type,
+            prompt_type=prompt_type_value,
             benchmark_root=benchmark_root,
-            only_first_step=only_first_step,
+            only_first_step=only_first_step_value,
+            setting=setting_value,
         )
         selected_defense = defense
         replay_only = False
@@ -631,13 +681,13 @@ def run_local_injecagent(
         "protocol": {
             "benchmark": "InjecAgent",
             "model_id": effective_model_id,
-            "setting": setting,
-            "prompt_type": prompt_type,
+            "setting": setting_value,
+            "prompt_type": prompt_type_value,
             "prompt_condition": condition.value,
-            "only_first_step": only_first_step,
+            "only_first_step": only_first_step_value,
             "defense": selected_defense,
             "replay_only": replay_only,
-            "clean_controls": clean_controls,
+            "clean_controls": clean_controls_value,
             "checkpoint": str(checkpoint_path),
             "max_cases_per_attack": max_cases_per_attack,
             "case_count": len(records),
@@ -733,17 +783,48 @@ def _adapter_from_model_configuration(configuration: Mapping[str, Any]) -> Model
     raise ValueError(f"unsupported model-config provider: {provider}")
 
 
-def _checkpoint_model_id(records: Sequence[Mapping[str, Any]]) -> str:
-    if not records:
-        raise ValueError("cannot derive model_id from an empty checkpoint selection")
-    metadata = records[0].get("generation_metadata")
-    if isinstance(metadata, Mapping) and metadata.get("model_id"):
-        return str(metadata["model_id"])
-    identity = records[0].get("run_identity")
-    model = identity.get("model") if isinstance(identity, Mapping) else None
-    if isinstance(model, Mapping) and model.get("model_id"):
-        return str(model["model_id"])
-    raise ValueError("checkpoint record is missing model_id traceability")
+def _match_replay_value(name: str, supplied: Any, recorded: Any) -> Any:
+    if supplied is not None and supplied != recorded:
+        raise ValueError(
+            f"replay {name} mismatch: supplied {supplied!r}, checkpoint records {recorded!r}"
+        )
+    return recorded
+
+
+def _validate_replay_model_configuration(
+    configuration: Mapping[str, Any], identity: Mapping[str, Any]
+) -> None:
+    if not configuration:
+        return
+    model = identity["model"]
+    adapter_configuration = identity["adapter_configuration"]
+    comparisons = {
+        "model_id": model.get("model_id"),
+        "revision": model.get("model_revision"),
+        "dtype": adapter_configuration.get("dtype"),
+        "quantization": adapter_configuration.get("quantization"),
+        "base_url": adapter_configuration.get("base_url"),
+    }
+    for field, recorded in comparisons.items():
+        if field in configuration and configuration[field] != recorded:
+            raise ValueError(
+                f"replay model-config {field} mismatch: supplied "
+                f"{configuration[field]!r}, checkpoint records {recorded!r}"
+            )
+    provider_types = {
+        "transformers": "TransformersAdapter",
+        "openai_compatible": "OpenAICompatibleAdapter",
+        "claude": "ClaudeAdapter",
+    }
+    provider = configuration.get("provider", "transformers")
+    expected_adapter = provider_types.get(provider)
+    if expected_adapter and not str(model.get("adapter_type", "")).endswith(
+        expected_adapter
+    ):
+        raise ValueError(
+            f"replay model-config provider mismatch: checkpoint adapter is "
+            f"{model.get('adapter_type')!r}"
+        )
 
 
 def compute_execution_scores(records: list[dict[str, Any]]) -> dict[str, str | int]:
@@ -788,6 +869,8 @@ def _build_run_identity(
     dataset_revision: str,
     max_new_tokens: int,
     only_first_step: bool,
+    setting: str,
+    control_kind: str,
 ) -> dict[str, Any]:
     adapter_type = f"{type(adapter).__module__}.{type(adapter).__qualname__}"
     model_id = getattr(adapter, "model_id", None)
@@ -810,6 +893,8 @@ def _build_run_identity(
         adapter_configuration["declared_identity"] = dict(supplied)
     return {
         "schema_version": 1,
+        "setting": setting,
+        "control_kind": control_kind,
         "prompt_condition": condition.value,
         "prompt_type": prompt_type,
         "dataset_revision": dataset_revision,
@@ -872,26 +957,27 @@ def _load_output_parser(root: Path):
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", dest="model_id")
-    parser.add_argument("--setting", choices=("base", "enhanced"), required=True)
-    parser.add_argument("--prompt-type", default="InjecAgent", choices=("InjecAgent", "hwchase17_react"))
+    parser.add_argument("--setting", choices=("base", "enhanced"))
+    parser.add_argument("--prompt-type", choices=("InjecAgent", "hwchase17_react"))
     parser.add_argument(
         "--prompt-condition",
         choices=tuple(condition.value for condition in PromptCondition),
-        default=PromptCondition.ORIGINAL.value,
     )
     parser.add_argument("--case-ids", help="JSON list or split object containing selected case IDs")
     parser.add_argument("--checkpoint", help="Append-safe generation checkpoint JSONL")
     parser.add_argument("--model-config", help="JSON model-adapter configuration")
-    parser.add_argument("--clean-controls", action="store_true")
+    parser.add_argument("--clean-controls", action="store_true", default=None)
     parser.add_argument("--replay-defense", choices=tuple(sorted(NATIVE_DEFENSES)))
     parser.add_argument("--max-cases", type=int)
     parser.add_argument("--max-cases-per-attack", type=int)
-    parser.add_argument("--only-first-step", action="store_true")
+    parser.add_argument("--only-first-step", action="store_true", default=None)
     parser.add_argument("--defense", default="no_defense", choices=("no_defense", "task_alignment_guard"))
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     if not args.model_id and not args.model_config and not args.replay_defense:
         parser.error("one of --model or --model-config is required")
+    if not args.setting and not args.replay_defense:
+        parser.error("--setting is required for generation")
     result = run_local_injecagent(
         model_id=args.model_id,
         setting=args.setting,
@@ -901,7 +987,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         output=args.output,
         only_first_step=args.only_first_step,
         defense=args.defense,
-        prompt_condition=PromptCondition(args.prompt_condition),
+        prompt_condition=(
+            PromptCondition(args.prompt_condition) if args.prompt_condition else None
+        ),
         case_ids=args.case_ids,
         checkpoint=args.checkpoint,
         model_config=args.model_config,

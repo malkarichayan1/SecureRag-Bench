@@ -659,3 +659,158 @@ def test_cli_accepts_study_flags_and_model_config_without_legacy_model(
     assert captured["clean_controls"] is True
     assert captured["replay_defense"] == "no_defense"
     assert '"#Test Case": 0' in capsys.readouterr().out
+
+
+def test_replay_derives_protocol_metadata_from_authenticated_checkpoint(tmp_path) -> None:
+    case = one_case()[0]
+    case_ids = tmp_path / "cases.json"
+    case_ids.write_text(json.dumps([case.case_id]), encoding="utf-8")
+    checkpoint = tmp_path / "records.jsonl"
+
+    class SafeGenerator:
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            return "Final Answer: Safe response."
+
+    run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        prompt_type="InjecAgent",
+        prompt_condition=PromptCondition.STRICT_REACT,
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        only_first_step=True,
+        output=tmp_path / "generated.json",
+        generator=SafeGenerator(),
+    )
+
+    replayed = run_local_injecagent(
+        model_id=None,
+        setting=None,
+        prompt_type=None,
+        prompt_condition=None,
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        only_first_step=None,
+        clean_controls=None,
+        replay_defense="task_alignment_guard",
+        output=tmp_path / "replayed.json",
+    )
+
+    assert replayed["protocol"]["model_id"] == "fake/local"
+    assert replayed["protocol"]["setting"] == "base"
+    assert replayed["protocol"]["prompt_type"] == "InjecAgent"
+    assert replayed["protocol"]["prompt_condition"] == "strict_react"
+    assert replayed["protocol"]["only_first_step"] is True
+    assert replayed["protocol"]["clean_controls"] is False
+
+
+@pytest.mark.parametrize(
+    ("override", "field"),
+    [
+        ({"model_id": "other/model"}, "model_id"),
+        (
+            {
+                "model_config": {
+                    "provider": "transformers",
+                    "model_id": "other/model",
+                }
+            },
+            "model_id",
+        ),
+        ({"model_config": {"model_id": "fake/local"}}, "provider"),
+        ({"setting": "enhanced"}, "setting"),
+        ({"prompt_condition": PromptCondition.ORIGINAL}, "prompt_condition"),
+        ({"prompt_type": "hwchase17_react"}, "prompt_type"),
+        ({"only_first_step": False}, "only_first_step"),
+        ({"clean_controls": True}, "control_kind"),
+    ],
+)
+def test_replay_rejects_cli_metadata_that_disagrees_with_checkpoint(
+    tmp_path, override, field
+) -> None:
+    case = one_case()[0]
+    case_ids = tmp_path / "cases.json"
+    case_ids.write_text(json.dumps([case.case_id]), encoding="utf-8")
+    checkpoint = tmp_path / "records.jsonl"
+
+    class SafeGenerator:
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            return "Final Answer: Safe response."
+
+    run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        prompt_condition=PromptCondition.STRICT_REACT,
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        only_first_step=True,
+        output=tmp_path / "generated.json",
+        generator=SafeGenerator(),
+    )
+    replay_args = {
+        "model_id": None,
+        "setting": None,
+        "prompt_type": None,
+        "prompt_condition": None,
+        "case_ids": case_ids,
+        "checkpoint": checkpoint,
+        "only_first_step": None,
+        "clean_controls": None,
+        "replay_defense": "task_alignment_guard",
+        "output": tmp_path / "replayed.json",
+        **override,
+    }
+
+    with pytest.raises(ValueError, match=field):
+        run_local_injecagent(**replay_args)
+
+
+def test_replay_rejects_checkpoint_with_mixed_authenticated_identities(tmp_path) -> None:
+    cases = load_native_cases(BENCHMARK_ROOT, "base")[:2]
+    case_ids = tmp_path / "cases.json"
+    case_ids.write_text(
+        json.dumps([case.case_id for case in cases]), encoding="utf-8"
+    )
+    checkpoint = tmp_path / "records.jsonl"
+
+    class SafeGenerator:
+        def generate(self, system_prompt: str, user_prompt: str) -> str:
+            return "Final Answer: Safe response."
+
+    run_local_injecagent(
+        model_id="fake/local",
+        setting="base",
+        prompt_condition=PromptCondition.STRICT_REACT,
+        case_ids=case_ids,
+        checkpoint=checkpoint,
+        only_first_step=True,
+        output=tmp_path / "generated.json",
+        generator=SafeGenerator(),
+    )
+    envelopes = [json.loads(line) for line in checkpoint.read_text().splitlines()]
+    payload = envelopes[1]["payload"]
+    identity = dict(payload["run_identity"])
+    identity["prompt_condition"] = "original"
+    payload["run_identity"] = identity
+    payload["run_identity_sha256"] = record_digest(identity)
+    payload.pop("record_sha256")
+    payload["record_sha256"] = record_digest(payload)
+    envelopes[1]["sha256"] = record_digest(payload)
+    checkpoint.write_text(
+        "".join(json.dumps(envelope, sort_keys=True) + "\n" for envelope in envelopes),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="consistent run identity"):
+        run_local_injecagent(
+            model_id=None,
+            setting=None,
+            prompt_type=None,
+            prompt_condition=None,
+            case_ids=case_ids,
+            checkpoint=checkpoint,
+            only_first_step=None,
+            clean_controls=None,
+            replay_defense="task_alignment_guard",
+            output=tmp_path / "replayed.json",
+        )

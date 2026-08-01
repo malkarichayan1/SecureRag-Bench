@@ -107,6 +107,38 @@ def evaluate_validity_gate(
     )
 
 
+def validated_run_identity(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return the one authenticated run identity shared by every record."""
+    if not records:
+        raise ValueError("records must not be empty")
+    expected_digest: str | None = None
+    expected_identity: dict[str, Any] | None = None
+    for record in records:
+        identity = record.get("run_identity")
+        supplied_digest = record.get("run_identity_sha256")
+        if not _meaningful_run_identity(identity) or not isinstance(supplied_digest, str):
+            raise ValueError("record is missing a meaningful run identity")
+        identity_copy = dict(identity)
+        calculated_digest = record_digest(identity_copy)
+        if calculated_digest != supplied_digest:
+            raise ValueError("run identity digest mismatch")
+        if expected_digest is None:
+            expected_digest = supplied_digest
+            expected_identity = identity_copy
+        elif supplied_digest != expected_digest or identity_copy != expected_identity:
+            raise ValueError("records do not share one consistent run identity")
+        if record.get("dataset_revision") != identity_copy["dataset_revision"]:
+            raise ValueError("record dataset revision does not match run identity")
+        if record.get("prompt_condition") != identity_copy["prompt_condition"]:
+            raise ValueError("record prompt condition does not match run identity")
+        if record.get("control_kind", "attacked") != identity_copy["control_kind"]:
+            raise ValueError("record control kind does not match run identity")
+    assert expected_identity is not None
+    return expected_identity
+
+
 def summarize_native_records(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Summarize native benchmark proposals separately from executions."""
     if not records:
@@ -307,23 +339,54 @@ def _has_runner_error(record: Mapping[str, Any]) -> bool:
 
 
 def _has_traceability(record: Mapping[str, Any]) -> bool:
-    required = (
+    nonempty_strings = (
         "case_id",
         "attack",
-        "raw_output",
-        "official_parse",
-        "validity",
-        "generation_metadata",
+        "system_prompt",
+        "rendered_prompt",
+        "dataset_revision",
         "run_identity_sha256",
         "record_sha256",
     )
-    return all(field in record and record[field] is not None for field in required)
+    if not all(
+        isinstance(record.get(field), str) and bool(str(record[field]).strip())
+        for field in nonempty_strings
+    ):
+        return False
+    if not isinstance(record.get("raw_output"), str):
+        return False
+    official_parse = record.get("official_parse")
+    validity = record.get("validity")
+    metadata = record.get("generation_metadata")
+    if not (
+        isinstance(official_parse, Mapping)
+        and bool(official_parse)
+        and isinstance(official_parse.get("eval"), str)
+    ):
+        return False
+    if not (
+        isinstance(validity, Mapping)
+        and bool(validity)
+        and isinstance(validity.get("protocol_valid"), bool)
+    ):
+        return False
+    if not (
+        isinstance(metadata, Mapping)
+        and bool(metadata)
+        and isinstance(metadata.get("model_id"), str)
+        and bool(str(metadata["model_id"]).strip())
+    ):
+        return False
+    return _meaningful_run_identity(record.get("run_identity"))
 
 
 def _records_have_valid_integrity(records: Sequence[Mapping[str, Any]]) -> bool:
-    case_ids: list[Any] = []
+    case_ids: set[str] = set()
     for record in records:
-        case_ids.append(record.get("case_id"))
+        case_id = record.get("case_id")
+        if not isinstance(case_id, str) or not case_id or case_id in case_ids:
+            return False
+        case_ids.add(case_id)
         supplied = record.get("record_sha256")
         if not isinstance(supplied, str):
             return False
@@ -331,7 +394,40 @@ def _records_have_valid_integrity(records: Sequence[Mapping[str, Any]]) -> bool:
         unhashed.pop("record_sha256", None)
         if record_digest(unhashed) != supplied:
             return False
-    return len(case_ids) == len(set(case_ids))
+    try:
+        validated_run_identity(records)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _meaningful_run_identity(identity: Any) -> bool:
+    if not isinstance(identity, Mapping) or not identity:
+        return False
+    string_fields = (
+        "setting",
+        "control_kind",
+        "prompt_condition",
+        "prompt_type",
+        "dataset_revision",
+    )
+    if not all(
+        isinstance(identity.get(field), str) and bool(str(identity[field]).strip())
+        for field in string_fields
+    ):
+        return False
+    model = identity.get("model")
+    generation_arguments = identity.get("generation_arguments")
+    return bool(
+        isinstance(identity.get("schema_version"), int)
+        and isinstance(identity.get("only_first_step"), bool)
+        and isinstance(model, Mapping)
+        and isinstance(model.get("model_id"), str)
+        and bool(str(model["model_id"]).strip())
+        and isinstance(identity.get("adapter_configuration"), Mapping)
+        and isinstance(generation_arguments, Mapping)
+        and bool(generation_arguments)
+    )
 
 
 def _paired_mcnemar(

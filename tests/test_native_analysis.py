@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from secure_rag_bench.evaluation.native_analysis import (
     analyze_native_artifacts,
     evaluate_validity_gate,
@@ -14,6 +16,23 @@ def make_validity_records(
     *, valid: int, invalid: int, dh: int, ds: int
 ) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
+    run_identity = {
+        "schema_version": 1,
+        "setting": "base",
+        "control_kind": "attacked",
+        "prompt_condition": "original",
+        "prompt_type": "InjecAgent",
+        "dataset_revision": "dataset-rev",
+        "model": {
+            "adapter_type": "tests.FakeAdapter",
+            "model_id": "fake/model",
+            "model_revision": "model-rev",
+        },
+        "adapter_configuration": {},
+        "generation_arguments": {"max_new_tokens": 512, "do_sample": False},
+        "only_first_step": True,
+    }
+    run_identity_sha256 = record_digest(run_identity)
     for index in range(valid + invalid):
         attack = "dh" if index < dh else "ds"
         record: dict[str, object] = {
@@ -21,6 +40,8 @@ def make_validity_records(
             "attack": attack,
             "control_kind": "attacked",
             "prompt_condition": "original",
+            "system_prompt": "System prompt",
+            "rendered_prompt": f"Rendered prompt {index}",
             "raw_output": f"output {index}",
             "official_parse": {"eval": "unsucc"},
             "eval": "unsucc" if index < valid else "invalid",
@@ -30,13 +51,24 @@ def make_validity_records(
                 "category": "valid" if index < valid else "syntax_error",
                 "detail": "accepted" if index < valid else "malformed",
             },
-            "generation_metadata": {"model_id": "fake/model"},
-            "run_identity_sha256": "a" * 64,
+            "generation_metadata": {
+                "provider": "fake",
+                "model_id": "fake/model",
+                "model_revision": "model-rev",
+            },
+            "dataset_revision": "dataset-rev",
+            "run_identity": run_identity,
+            "run_identity_sha256": run_identity_sha256,
         }
         record["record_sha256"] = record_digest(record)
         records.append(record)
     assert dh + ds == len(records)
     return records
+
+
+def rehash(record: dict[str, object]) -> None:
+    record.pop("record_sha256", None)
+    record["record_sha256"] = record_digest(record)
 
 
 def test_summary_keeps_model_and_executed_attack_success_distinct() -> None:
@@ -104,6 +136,43 @@ def test_gate_reports_stable_reasons_for_each_failed_precondition() -> None:
         "integrity_failure",
     )
     assert evaluate_validity_gate(corrupt).reasons == ("integrity_failure",)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("system_prompt", ""),
+        ("rendered_prompt", ""),
+        ("dataset_revision", ""),
+        ("official_parse", {}),
+        ("generation_metadata", {}),
+        ("run_identity", {}),
+    ],
+)
+def test_gate_rejects_missing_or_empty_traceability(field, replacement) -> None:
+    records = make_validity_records(valid=50, invalid=0, dh=25, ds=25)
+    records[0][field] = replacement
+    rehash(records[0])
+
+    decision = evaluate_validity_gate(records)
+
+    assert "missing_traceability" in decision.reasons
+
+
+def test_gate_rejects_bogus_or_mixed_run_identity() -> None:
+    bogus = make_validity_records(valid=50, invalid=0, dh=25, ds=25)
+    bogus[0]["run_identity_sha256"] = "b" * 64
+    rehash(bogus[0])
+
+    mixed = make_validity_records(valid=50, invalid=0, dh=25, ds=25)
+    changed_identity = dict(mixed[0]["run_identity"])
+    changed_identity["prompt_condition"] = "strict_react"
+    mixed[0]["run_identity"] = changed_identity
+    mixed[0]["run_identity_sha256"] = record_digest(changed_identity)
+    rehash(mixed[0])
+
+    assert evaluate_validity_gate(bogus).reasons == ("integrity_failure",)
+    assert evaluate_validity_gate(mixed).reasons == ("integrity_failure",)
 
 
 def test_validity_summary_reports_grouped_denominators_and_distinct_asr() -> None:
