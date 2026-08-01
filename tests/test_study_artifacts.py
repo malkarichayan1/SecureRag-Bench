@@ -127,3 +127,20 @@ def test_manifest_is_redacted_hashed_and_atomically_serialized(tmp_path) -> None
     assert persisted["payload"]["api_key"] == "[REDACTED]"
     assert persisted["sha256"] == record_digest(persisted["payload"])
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_manifest_nested_payload_cannot_be_mutated_after_construction(tmp_path) -> None:
+    """Exposing the stored nested payload would persist a changed value with an old digest."""
+    source = {"records": {"a": {"score": 1}}}
+    manifest = StudyManifest(source)
+    source["records"]["a"]["score"] = 99
+    manifest.payload["records"]["a"]["score"] = 98
+    exported = manifest.to_dict()
+    exported["payload"]["records"]["a"]["score"] = 97
+
+    path = tmp_path / "summary.json"
+    manifest.write(path)
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["payload"]["records"]["a"]["score"] == 1
+    assert persisted["sha256"] == record_digest(persisted["payload"])

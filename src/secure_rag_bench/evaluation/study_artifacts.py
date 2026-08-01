@@ -7,7 +7,7 @@ summary or a partially-written record.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha256
 import hmac
 import json
@@ -85,7 +85,7 @@ def _is_secret_key(key: Any) -> bool:
     return normalized.endswith(("_api_key", "_token", "_secret", "_password", "_private_key"))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class StudyManifest:
     """A redacted aggregate payload that can be atomically persisted.
 
@@ -94,17 +94,22 @@ class StudyManifest:
     The stored envelope hashes the complete redacted payload.
     """
 
-    payload: Mapping[str, Any]
-    sha256: str = field(init=False)
+    _payload_json: str
+    sha256: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.payload, Mapping):
+    def __init__(self, payload: Mapping[str, Any]) -> None:
+        if not isinstance(payload, Mapping):
             raise TypeError("StudyManifest payload must be a mapping")
-        # A JSON round trip detaches the manifest from caller-owned mutable data.
-        redacted_payload = redact_secrets(self.payload)
-        detached_payload = json.loads(canonical_json(redacted_payload))
-        object.__setattr__(self, "payload", detached_payload)
-        object.__setattr__(self, "sha256", record_digest(detached_payload))
+        # Keep the canonical JSON, not a caller-visible mutable mapping.  Each
+        # public accessor receives a fresh detached copy of this snapshot.
+        payload_json = canonical_json(redact_secrets(payload))
+        object.__setattr__(self, "_payload_json", payload_json)
+        object.__setattr__(self, "sha256", sha256(payload_json.encode("utf-8")).hexdigest())
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        """Return a detached copy of the manifest payload."""
+        return json.loads(self._payload_json)
 
     @classmethod
     def from_records(
@@ -136,7 +141,10 @@ class StudyManifest:
 
     def write(self, path: Path) -> None:
         """Atomically write this manifest through a sibling temporary file."""
-        _atomic_write_bytes(Path(path), (canonical_json(self.to_dict()) + "\n").encode("utf-8"))
+        payload = self.payload
+        if record_digest(payload) != self.sha256:
+            raise ValueError("manifest payload digest mismatch")
+        _atomic_write_bytes(Path(path), (canonical_json({"payload": payload, "sha256": self.sha256}) + "\n").encode("utf-8"))
 
     write_atomic = write
 
