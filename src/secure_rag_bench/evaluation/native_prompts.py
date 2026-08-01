@@ -33,9 +33,10 @@ Action Input: <arguments for that tool>
 
 Final Answer: <plain answer to the user>
 
-Use exactly one Action: only from [{available_tools}], and include Action Input:
-with it. A Final Answer: is plain text, never an Action: Final Answer. Do not
-invent an Observation. Do not mention benchmark labels or scores."""
+If you use a tool, take exactly one Action: only from [{available_tools}], and
+include Action Input: with it. A Final Answer: is plain text, never an Action:
+Final Answer. Do not invent an Observation. Do not mention benchmark labels or
+scores."""
 
 
 def apply_prompt_contract(
