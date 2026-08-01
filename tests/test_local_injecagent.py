@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+import secure_rag_bench.evaluation.local_injecagent as runner_module
 from secure_rag_bench.evaluation.local_injecagent import (
     build_case_prompt,
     compute_native_scores,
@@ -10,6 +13,7 @@ from secure_rag_bench.evaluation.local_injecagent import (
 from secure_rag_bench.evaluation.model_adapters import GenerationResult
 from secure_rag_bench.evaluation.native_cases import load_native_cases
 from secure_rag_bench.evaluation.native_prompts import PromptCondition
+from secure_rag_bench.evaluation.native_validity import ValidityDiagnostic
 from secure_rag_bench.evaluation.study_artifacts import (
     JsonlCheckpointStore,
     record_digest,
@@ -20,15 +24,23 @@ BENCHMARK_ROOT = Path(__file__).resolve().parents[1] / "data" / "external" / "In
 
 
 class FakeAdapter:
-    def __init__(self, text: str) -> None:
+    def __init__(
+        self,
+        text: str,
+        *,
+        model_id: str = "fake",
+        model_revision: str = "fake-rev",
+    ) -> None:
         self.text = text
+        self.model_id = model_id
+        self.model_revision = model_revision
 
     def generate(self, request) -> GenerationResult:
         return GenerationResult(
             text=self.text,
             metadata={
-                "model_id": "fake",
-                "model_revision": "fake-rev",
+                "model_id": self.model_id,
+                "model_revision": self.model_revision,
                 "api_key": "must-not-persist",
             },
         )
@@ -101,6 +113,85 @@ def test_runner_resumes_without_second_generation(tmp_path) -> None:
     assert second == first
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"prompt_condition": PromptCondition.STRICT_REACT},
+        {"prompt_type": "hwchase17_react"},
+        {"dataset_revision": "dataset-b"},
+        {"max_new_tokens": 128},
+        {"only_first_step": False},
+    ],
+)
+def test_runner_rejects_checkpoint_with_changed_run_configuration(
+    tmp_path, changed
+) -> None:
+    checkpoint = store(tmp_path)
+    adapter = CountingAdapter()
+    baseline = {
+        "prompt_condition": PromptCondition.ORIGINAL,
+        "prompt_type": "InjecAgent",
+        "dataset_revision": "dataset-a",
+        "max_new_tokens": 512,
+        "only_first_step": True,
+    }
+    run_native_cases(
+        one_case(),
+        adapter,
+        baseline.pop("prompt_condition"),
+        checkpoint,
+        **baseline,
+    )
+    requested = {
+        "prompt_condition": PromptCondition.ORIGINAL,
+        "prompt_type": "InjecAgent",
+        "dataset_revision": "dataset-a",
+        "max_new_tokens": 512,
+        "only_first_step": True,
+        **changed,
+    }
+
+    with pytest.raises(ValueError, match="checkpoint run identity mismatch"):
+        run_native_cases(
+            one_case(),
+            adapter,
+            requested.pop("prompt_condition"),
+            checkpoint,
+            **requested,
+        )
+    assert adapter.calls == 1
+
+
+def test_runner_rejects_checkpoint_from_different_model_revision(tmp_path) -> None:
+    checkpoint = store(tmp_path)
+    first = FakeAdapter(
+        "Final Answer: I will safely answer the user request.",
+        model_id="model-a",
+        model_revision="rev-a",
+    )
+    changed = FakeAdapter(
+        "Final Answer: I will safely answer the user request.",
+        model_id="model-a",
+        model_revision="rev-b",
+    )
+    run_native_cases(
+        one_case(),
+        first,
+        PromptCondition.ORIGINAL,
+        checkpoint,
+        dataset_revision="dataset-a",
+    )
+
+    with pytest.raises(ValueError, match="checkpoint run identity mismatch"):
+        run_native_cases(
+            one_case(),
+            changed,
+            PromptCondition.ORIGINAL,
+            checkpoint,
+            dataset_revision="dataset-a",
+        )
+
+
 def test_second_step_error_does_not_overwrite_successful_first_parse(tmp_path) -> None:
     case = one_data_stealing_case()[0]
 
@@ -132,6 +223,154 @@ def test_second_step_error_does_not_overwrite_successful_first_parse(tmp_path) -
     assert records[0]["official_parse"]["eval"] == "succ"
     assert records[0]["eval Step 2"] == "invalid"
     assert records[0]["runner_error_step_2"] == "step two unavailable"
+
+
+def test_runner_persists_first_raw_result_when_official_parser_raises(
+    tmp_path, monkeypatch
+) -> None:
+    raw_output = "Final Answer: parser failure must not erase this output."
+
+    def raising_parser(*args):
+        raise RuntimeError("parser exploded")
+
+    monkeypatch.setattr(runner_module, "_load_output_parser", lambda root: raising_parser)
+
+    record = run_native_cases(
+        one_case(),
+        FakeAdapter(raw_output),
+        PromptCondition.ORIGINAL,
+        store(tmp_path),
+    )[0]
+
+    assert record["rendered_prompt"]
+    assert record["raw_output"] == raw_output
+    assert record["generation_metadata"]["model_revision"] == "fake-rev"
+    assert record["eval"] == "invalid"
+    assert "parser exploded" in record["runner_error"]
+
+
+def test_runner_preserves_official_parse_when_diagnostic_raises(
+    tmp_path, monkeypatch
+) -> None:
+    raw_output = "Final Answer: diagnostic failure must not erase this output."
+
+    def raising_diagnostic(*args):
+        raise RuntimeError("diagnostic exploded")
+
+    monkeypatch.setattr(runner_module, "diagnose_native_output", raising_diagnostic)
+
+    record = run_native_cases(
+        one_case(),
+        FakeAdapter(raw_output),
+        PromptCondition.ORIGINAL,
+        store(tmp_path),
+    )[0]
+
+    assert record["raw_output"] == raw_output
+    assert record["generation_metadata"]["model_revision"] == "fake-rev"
+    assert record["official_parse"]["eval"] == "unsucc"
+    assert record["eval"] == "unsucc"
+    assert "diagnostic exploded" in record["runner_error"]
+
+
+def test_runner_persists_second_raw_result_when_official_parser_raises(
+    tmp_path, monkeypatch
+) -> None:
+    case = one_data_stealing_case()[0]
+    parser_calls = 0
+
+    def parser(*args):
+        nonlocal parser_calls
+        parser_calls += 1
+        if parser_calls == 2:
+            raise RuntimeError("step two parser exploded")
+        return {
+            "eval": "succ",
+            "Attacker Tool Parameters": "{}",
+            "Attacker Tool Thought": "follow",
+        }
+
+    class SequenceAdapter:
+        model_id = "fake-sequence"
+        model_revision = "fake-rev"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, request) -> GenerationResult:
+            self.calls += 1
+            return GenerationResult(
+                text=f"unchanged raw output {self.calls}",
+                metadata={"model_revision": "fake-rev", "sequence": self.calls},
+            )
+
+    monkeypatch.setattr(runner_module, "_load_output_parser", lambda root: parser)
+
+    record = run_native_cases(
+        [case],
+        SequenceAdapter(),
+        PromptCondition.ORIGINAL,
+        store(tmp_path),
+    )[0]
+
+    assert record["rendered_prompt_step_2"]
+    assert record["raw_output_step_2"] == "unchanged raw output 2"
+    assert record["generation_metadata_step_2"]["sequence"] == 2
+    assert record["eval Step 2"] == "invalid"
+    assert "step two parser exploded" in record["runner_error_step_2"]
+
+
+def test_runner_preserves_second_official_parse_when_diagnostic_raises(
+    tmp_path, monkeypatch
+) -> None:
+    case = one_data_stealing_case()[0]
+    diagnostic_calls = 0
+
+    def parser(*args):
+        if args[1] == case.item["Attacker Tools"][0]:
+            return {
+                "eval": "succ",
+                "Attacker Tool Parameters": "{}",
+                "Attacker Tool Thought": "follow",
+            }
+        return {"eval": "succ"}
+
+    def diagnostic(*args):
+        nonlocal diagnostic_calls
+        diagnostic_calls += 1
+        if diagnostic_calls == 2:
+            raise RuntimeError("step two diagnostic exploded")
+        return ValidityDiagnostic(True, True, "valid", "accepted")
+
+    class SequenceAdapter:
+        model_id = "fake-sequence"
+        model_revision = "fake-rev"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, request) -> GenerationResult:
+            self.calls += 1
+            return GenerationResult(
+                text=f"unchanged raw output {self.calls}",
+                metadata={"model_revision": "fake-rev", "sequence": self.calls},
+            )
+
+    monkeypatch.setattr(runner_module, "_load_output_parser", lambda root: parser)
+    monkeypatch.setattr(runner_module, "diagnose_native_output", diagnostic)
+
+    record = run_native_cases(
+        [case],
+        SequenceAdapter(),
+        PromptCondition.ORIGINAL,
+        store(tmp_path),
+    )[0]
+
+    assert record["raw_output_step_2"] == "unchanged raw output 2"
+    assert record["generation_metadata_step_2"]["sequence"] == 2
+    assert record["official_parse_step_2"]["eval"] == "succ"
+    assert record["eval Step 2"] == "succ"
+    assert "step two diagnostic exploded" in record["runner_error_step_2"]
 
 
 def test_build_case_prompt_includes_tools_and_scratchpad() -> None:
@@ -169,6 +408,21 @@ def test_compute_native_scores_matches_injecagent_categories() -> None:
     assert scores["ASR-valid (Direct Harm)"] == "50.0"
     assert scores["ASR-valid (S1)"] == "50.0"
     assert scores["ASR-valid (S2)"] == "100.0"
+
+
+def test_compute_native_scores_counts_invalid_second_step_like_official_scorer() -> None:
+    records = [
+        {"attack": "ds", "eval": "succ", "eval Step 2": "invalid"},
+        {"attack": "ds", "eval": "unsucc"},
+    ]
+
+    scores = compute_native_scores(records)
+
+    assert scores["Valid Rate"] == "50.0"
+    assert scores["ASR-valid (S1)"] == "50.0"
+    assert scores["ASR-valid (S2)"] == "-"
+    assert scores["ASR-valid (Data Stealing)"] == "0.0"
+    assert scores["ASR-all (S1)"] == "50.0"
 
 
 def test_local_runner_writes_resumable_result_for_one_real_case(tmp_path) -> None:
