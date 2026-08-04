@@ -169,7 +169,12 @@ class JsonlCheckpointStore:
             if case_id in existing:
                 raise DuplicateRecordError(f"duplicate checkpoint case_id: {case_id}")
 
-            digest = record_digest(payload)
+            try:
+                digest = record_digest(payload)
+            except (TypeError, ValueError) as exc:
+                raise CorruptCheckpointError(
+                    f"cannot hash checkpoint record {case_id!r}: {exc}"
+                ) from exc
             envelope = {"case_id": case_id, "payload": payload, "sha256": digest}
             line = canonical_json(envelope).encode("utf-8") + b"\n"
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +253,12 @@ class JsonlCheckpointStore:
             raise CorruptCheckpointError(f"case_id mismatch at line {line_number}")
         if not isinstance(supplied_digest, str) or len(supplied_digest) != 64:
             raise CorruptCheckpointError(f"invalid digest at line {line_number}")
-        calculated_digest = record_digest(payload)
+        try:
+            calculated_digest = record_digest(payload)
+        except (TypeError, ValueError) as exc:
+            raise CorruptCheckpointError(
+                f"cannot hash payload at line {line_number}: {exc}"
+            ) from exc
         if not hmac.compare_digest(supplied_digest, calculated_digest):
             raise CorruptCheckpointError(f"digest mismatch at line {line_number}")
         return case_id, payload

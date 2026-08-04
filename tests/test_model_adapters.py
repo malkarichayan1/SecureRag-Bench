@@ -284,7 +284,19 @@ def test_native_model_config_marks_hosted_entries_disabled() -> None:
     models = json.loads(config_path.read_text(encoding="utf-8"))["models"]
     by_name = {model["name"]: model for model in models}
 
-    assert {"qwen-7b", "qwen-14b", "llama-3.1-8b"} <= set(by_name)
+    assert set(by_name) == {
+        "qwen-7b",
+        "qwen-14b",
+        "llama-3.1-8b",
+        "qwen-32b-4bit",
+        "llama-3.1-70b-endpoint",
+        "claude",
+    }
+    for name in ("qwen-7b", "qwen-14b", "llama-3.1-8b"):
+        assert by_name[name]["tier"] == "primary"
+        assert by_name[name]["enabled"] is True
     assert by_name["qwen-32b-4bit"]["tier"] == "conditional"
-    assert by_name["llama-3.1-70b-endpoint"]["enabled"] is False
-    assert by_name["claude"]["enabled"] is False
+    assert by_name["qwen-32b-4bit"]["enabled"] is True
+    for name in ("llama-3.1-70b-endpoint", "claude"):
+        assert by_name[name]["tier"] == "optional"
+        assert by_name[name]["enabled"] is False
