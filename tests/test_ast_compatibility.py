@@ -103,6 +103,18 @@ def test_plan_that_runs_without_matching_expected_effect_is_not_a_rejection() ->
     assert record.rejection_category is None
 
 
+def test_repeated_evaluation_of_the_same_case_does_not_leak_prior_tool_calls() -> None:
+    """A prior successful call recorded on a case must not leak into a later,
+    unrelated evaluation of that same (reused) BenignPlanCase object."""
+    case = email_case()
+
+    successful = evaluate_benign_plan(case, "send_email('team@example.test', 'Status', 'On track')")
+    assert successful.execution_succeeded
+
+    unrelated = evaluate_benign_plan(case, "answer = 'noop'")
+    assert not unrelated.execution_succeeded
+
+
 # --- Broader rejection taxonomy (beyond the three stable spec examples) ----
 
 

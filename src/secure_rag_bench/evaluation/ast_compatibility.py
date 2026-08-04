@@ -90,6 +90,7 @@ class SimulatedEffectToolbox:
 
 def evaluate_benign_plan(case: BenignPlanCase, raw_plan: str) -> ASTCompatibilityRecord:
     """Feed ``raw_plan`` unmodified into a fresh interpreter and record the outcome."""
+    _reset_simulated_state(case)
     interpreter = CaMeLInterpreter(tools=dict(case.tools))
 
     try:
@@ -192,6 +193,29 @@ def _categorize(exc: Exception) -> tuple[str, str]:
 
 def _generic_detail(category: str) -> str:
     return f"{category} rejection (details redacted)"
+
+
+def _reset_simulated_state(case: BenignPlanCase) -> None:
+    """Clear any simulated-toolbox call history baked into this case's tools.
+
+    ``build_benign_plan_catalog`` builds each case's tools once, at catalog
+    build time, so the bound methods in ``case.tools`` and the ``calls`` list
+    referenced by ``case.expected_effect`` belong to the same long-lived
+    toolbox instance and persist across repeated ``evaluate_benign_plan``
+    calls on the same case object. ``BenignPlanCase`` is frozen and its
+    ``tools``/``expected_effect`` mappings cannot be rebound per call, so the
+    only way to isolate one evaluation from the next is to clear that shared
+    mutable state in place before every evaluation. Clearing in place also
+    keeps ``expected_effect["calls"]`` consistent automatically, since it is
+    the very same list object each bound tool method appends to.
+    """
+    seen: set[int] = set()
+    for tool in case.tools.values():
+        owner = getattr(tool, "__self__", None)
+        calls = getattr(owner, "calls", None)
+        if isinstance(calls, list) and id(calls) not in seen:
+            calls.clear()
+            seen.add(id(calls))
 
 
 def _expected_effect_recorded(expected_effect: Mapping[str, Any]) -> bool:
