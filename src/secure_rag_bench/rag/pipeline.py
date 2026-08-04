@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 from secure_rag_bench.camel.quarantined_llm import QuarantinedLLM, MockQuarantinedLLM, wrap_untrusted
-from secure_rag_bench.rag.hybrid_retrieval import Document, HybridRetriever, MockEmbeddingModel
+from secure_rag_bench.rag.hybrid_retrieval import (
+    Document,
+    EmbeddingModel,
+    HybridRetriever,
+    MockEmbeddingModel,
+)
 from secure_rag_bench.rag.reranker import NeuralReranker, RerankedResult
 
 
@@ -45,10 +50,21 @@ class SecureRAGPipeline:
         documents: list[Document],
         quarantined_llm: QuarantinedLLM | None = None,
         config: PipelineConfig | None = None,
+        embedding_model: EmbeddingModel | None = None,
+        reranker: NeuralReranker | None = None,
     ) -> None:
+        """Build the pipeline, optionally sharing explicit retrieval components.
+
+        ``embedding_model`` and ``reranker`` let callers (for example the CEM
+        study and the adaptive runner) reuse one deterministic embedding/ranking
+        stack across pipelines. Both default to exactly the components this
+        pipeline has always constructed for itself.
+        """
         self.config = config or PipelineConfig()
-        self.retriever = HybridRetriever(documents, embedding_model=MockEmbeddingModel())
-        self.reranker = NeuralReranker(output_top_k=self.config.rerank_top_k)
+        self.retriever = HybridRetriever(
+            documents, embedding_model=embedding_model or MockEmbeddingModel()
+        )
+        self.reranker = reranker or NeuralReranker(output_top_k=self.config.rerank_top_k)
         self.quarantined_llm = quarantined_llm or MockQuarantinedLLM()
 
     def run(self, query: str) -> PipelineResult:
