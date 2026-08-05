@@ -55,10 +55,12 @@ class SecureRAGPipeline:
     ) -> None:
         """Build the pipeline, optionally sharing explicit retrieval components.
 
-        ``embedding_model`` and ``reranker`` let callers (for example the CEM
-        study and the adaptive runner) reuse one deterministic embedding/ranking
-        stack across pipelines. Both default to exactly the components this
-        pipeline has always constructed for itself.
+        ``embedding_model`` and ``reranker`` let a caller reuse one
+        deterministic embedding/ranking stack across multiple pipelines (for
+        example, a future refactor of the CEM study) instead of each pipeline
+        constructing its own. Both default to exactly the components this
+        pipeline has always constructed for itself, so existing callers are
+        unaffected.
         """
         self.config = config or PipelineConfig()
         self.retriever = HybridRetriever(
