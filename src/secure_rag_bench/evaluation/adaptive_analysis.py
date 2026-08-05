@@ -107,6 +107,44 @@ values that could be mistaken for a real bank account or Slack channel. This
 guard exists to catch a *future* regeneration of the scenario catalog that
 accidentally introduces a real-looking email address, not to certify the
 catalog is safe in every conceivable dimension.
+
+### Bounded regex cost
+
+``_EMAIL_PATTERN`` is unanchored and matched with ``finditer`` against
+free-form text, which is exactly the shape that trips up Python's
+backtracking regex engine: on a long string that contains an ``"@"`` but no
+matching domain after it (e.g. a single huge delimiter-free token), the
+engine backtracks the leading character class from every candidate start
+position all the way to the end of the string looking for a literal it will
+never find, which is O(n) work repeated at O(n) positions -- an O(n^2) cost
+found and measured in code review (multi-second to multi-minute stalls on
+inputs in the hundreds of KB). Nothing in the shipped scenario catalog is
+anywhere near that large today, but this guard's entire purpose is to hold
+up against a *future*, adversarially-regenerated catalog, so it must not
+itself become an unbounded-cost stall when that happens. The mitigation
+below is deliberately two layers, not one, because either layer alone leaves
+a gap the other closes:
+
+1. ``text`` is split on whitespace before matching. A valid email address
+   never contains whitespace, so this loses no detection capability, and it
+   caps the regex's search space to one token's length instead of the whole
+   value -- which is enough on its own for realistic natural-language
+   content (a long document body with one embedded address, say), since
+   each individual word-token stays short.
+2. It is not enough by itself: a purely adversarial value can be one giant
+   token with no whitespace at all (the regression test below uses exactly
+   that shape). So any token that both contains a literal ``"@"`` (a cheap,
+   non-backtracking ``in`` check) and exceeds
+   ``_MAX_SCANNED_TOKEN_LENGTH`` is treated as *unverifiable* and rejected
+   outright -- fail closed, the same way an oversized, unparseable input
+   would be treated as suspicious rather than silently truncated and
+   possibly-still-unsafe. ``_MAX_SCANNED_TOKEN_LENGTH`` is comfortably above
+   any real email address (RFC 5321 caps the whole address well under this)
+   and above the shipped catalog's longest existing token, so it never
+   fires on legitimate content; it only bounds the adversarial case to a
+   fixed, negligible worst-case regex cost (low milliseconds, not minutes).
+   A token without a literal ``"@"`` can never be email-shaped, so it is
+   skipped for free without ever reaching the regex, regardless of length.
 """
 
 from __future__ import annotations
@@ -123,6 +161,13 @@ _RESERVED_EMAIL_DOMAINS = frozenset({"example.com", "example.net", "example.org"
 _RESERVED_EMAIL_SUFFIXES = (".test", ".example", ".invalid", ".localhost")
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9_.+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}")
 
+#: Longest single (whitespace-delimited) token this guard will run the
+#: backtracking email regex against. A real email address is far shorter
+#: than this (RFC 5321 caps the whole address well under this bound), and
+#: the shipped catalog's longest token is a fraction of it, so this never
+#: fires on legitimate content -- see "Bounded regex cost" above.
+_MAX_SCANNED_TOKEN_LENGTH = 512
+
 
 class UnsafeRecordedTargetError(ValueError):
     """Raised when a recorded tool call names an email at a non-reserved domain."""
@@ -131,23 +176,35 @@ class UnsafeRecordedTargetError(ValueError):
 def assert_no_real_targets(records: Sequence[AdaptiveRunRecord]) -> None:
     """Raise if any recorded external-action call names a real-looking email.
 
-    See the module docstring's "real-target safety guard" section for the
-    exact heuristic and its documented limitations.
+    See the module docstring's "real-target safety guard" section (and its
+    "Bounded regex cost" subsection) for the exact heuristic, the two-layer
+    cost bound, and their documented limitations.
     """
     for record in records:
         for call in record.recorded_calls:
             for raw_value in call.argument_values():
                 text = raw_value if isinstance(raw_value, str) else str(raw_value)
-                for match in _EMAIL_PATTERN.finditer(text):
-                    address = match.group(0)
-                    domain = address.rsplit("@", 1)[1].lower()
-                    if domain in _RESERVED_EMAIL_DOMAINS or domain.endswith(_RESERVED_EMAIL_SUFFIXES):
+                for token in text.split():
+                    if "@" not in token:
                         continue
-                    raise UnsafeRecordedTargetError(
-                        f"{record.scenario_id} ({record.monitor.value}): recorded "
-                        f"{call.tool!r} call names a non-reserved-looking email "
-                        f"address: {address!r}"
-                    )
+                    if len(token) > _MAX_SCANNED_TOKEN_LENGTH:
+                        raise UnsafeRecordedTargetError(
+                            f"{record.scenario_id} ({record.monitor.value}): recorded "
+                            f"{call.tool!r} call has a delimiter-free argument token "
+                            f"longer than {_MAX_SCANNED_TOKEN_LENGTH} characters containing "
+                            "'@' -- cannot verify it is email-address-free without an "
+                            "unbounded regex scan, so it is treated as unsafe"
+                        )
+                    for match in _EMAIL_PATTERN.finditer(token):
+                        address = match.group(0)
+                        domain = address.rsplit("@", 1)[1].lower()
+                        if domain in _RESERVED_EMAIL_DOMAINS or domain.endswith(_RESERVED_EMAIL_SUFFIXES):
+                            continue
+                        raise UnsafeRecordedTargetError(
+                            f"{record.scenario_id} ({record.monitor.value}): recorded "
+                            f"{call.tool!r} call names a non-reserved-looking email "
+                            f"address: {address!r}"
+                        )
 
 
 def summarize_adaptive_records(records: Sequence[AdaptiveRunRecord]) -> dict[str, Any]:

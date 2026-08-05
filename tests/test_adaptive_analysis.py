@@ -8,6 +8,8 @@ the real 20-scenario x 3-monitor sweep lives in ``tests/test_evaluation.py``.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from secure_rag_bench.evaluation.adaptive_analysis import (
@@ -290,3 +292,63 @@ def test_assert_no_real_targets_ignores_non_email_argument_values() -> None:
         recorded_calls=(RecordedToolCall(tool="transfer", args=("VENDOR-ONFILE-002", 400), kwargs={}),),
     )
     assert_no_real_targets([record])  # must not raise
+
+
+def test_assert_no_real_targets_ignores_a_long_token_without_an_at_sign() -> None:
+    """A long delimiter-free token that never contains '@' cannot be
+    email-shaped, so it must be skipped for free rather than flagged as
+    unverifiable -- only tokens that both contain '@' and exceed the length
+    cap are treated as unsafe."""
+    record = _record(
+        scenario_id="synthetic_long_non_email_token",
+        family="synthetic",
+        pair_id="synthetic",
+        is_attack=False,
+        monitor=MonitorConfiguration.NO_MONITOR,
+        retrieval_exposed=False,
+        plan_valid=True,
+        attempted_target_action=True,
+        target_effect_executed=True,
+        benign_success=True,
+        recorded_calls=(
+            RecordedToolCall(tool="post_message", args=("status", "a" * 5000), kwargs={}),
+        ),
+    )
+    assert_no_real_targets([record])  # must not raise
+
+
+def test_assert_no_real_targets_bounds_regex_cost_on_a_pathological_token() -> None:
+    """Regression test for a quadratic-blowup regex found in code review
+    (commit f6f09af): an unanchored ``finditer`` email pattern applied to a
+    long, delimiter-free string containing '@' cost O(n^2) -- 10.4s at
+    100,000 chars, 40.9s at 200,000, 162.3s at 400,000, measured against the
+    pre-fix code. A single giant whitespace-free token (so the
+    split-on-whitespace mitigation alone cannot help) must now be rejected
+    as unverifiable in comfortably under a second, not fed to the regex
+    whole -- proving the length-capped fail-closed path actually engages."""
+    record = _record(
+        scenario_id="synthetic_pathological_token",
+        family="synthetic",
+        pair_id="synthetic",
+        is_attack=True,
+        monitor=MonitorConfiguration.NO_MONITOR,
+        retrieval_exposed=True,
+        plan_valid=True,
+        attempted_target_action=True,
+        target_effect_executed=True,
+        benign_success=False,
+        recorded_calls=(
+            RecordedToolCall(
+                tool="send_email",
+                args=("team@example.test", "Subj", "x@" + "a" * 200_000),
+                kwargs={},
+            ),
+        ),
+    )
+
+    started = time.perf_counter()
+    with pytest.raises(UnsafeRecordedTargetError):
+        assert_no_real_targets([record])
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0, f"assert_no_real_targets took {elapsed:.3f}s on a pathological token"
