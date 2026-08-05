@@ -2,6 +2,8 @@ from typing import Any
 
 import json
 
+import pytest
+
 from secure_rag_bench.evaluation.red_team import (
     ATTACK_TASKS,
     BANKING_TASKS,
@@ -192,3 +194,123 @@ def test_cli_writes_all_suite_free_baseline_artifact(tmp_path) -> None:
         "dh_base", "dh_enhanced", "ds_base", "ds_enhanced",
     }
     assert set(study["aggregate"]["variants"]) == set(FREE_BASELINE_NAMES)
+
+
+# --- Task 4: adaptive and ast-compatibility CLI modes -----------------------
+
+
+def test_cli_writes_adaptive_artifact_for_the_full_scenario_monitor_sweep(tmp_path) -> None:
+    """A real, end-to-end integration test: 20 scenarios x 3 monitors = 60
+    real ``run_adaptive_scenario`` calls, not a synthetic fixture. This also
+    exercises ``assert_no_real_targets`` for real -- a regression that ever
+    let a non-reserved-domain email through the catalog would fail this test
+    with an ``UnsafeRecordedTargetError``, not just a documentation note."""
+    cem_artifact_path = tmp_path / "cem.json"
+    cem_artifact_path.write_text(
+        json.dumps({"best_prefix": "alpha bravo charlie delta echo foxtrot golf hotel india juliet"}),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "adaptive.json"
+
+    assert main([
+        "adaptive",
+        "--cem-artifact", str(cem_artifact_path),
+        "--output", str(output_path),
+    ]) == 0
+
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    adaptive = result["adaptive"]
+
+    assert len(adaptive["records"]) == 60
+    assert adaptive["summary"]["case_count"] == 60
+    assert set(adaptive["summary"]["by_monitor"]) == {"no_monitor", "policy_only", "full_monitor"}
+    assert len(adaptive["summary"]["by_scenario"]) == 20
+
+    manifest = adaptive["manifest"]
+    assert isinstance(manifest["sha256"], str) and len(manifest["sha256"]) == 64
+    assert len(manifest["payload"]["completed_case_ids"]) == 60
+
+    # No recorded external-action call may target a non-reserved-looking
+    # email domain (defense in depth alongside assert_no_real_targets, which
+    # already ran inside run_adaptive_eval before this artifact was written).
+    for record in adaptive["records"]:
+        for call in record["recorded_calls"]:
+            for value in list(call["args"]) + list(call["kwargs"].values()):
+                if isinstance(value, str) and "@" in value:
+                    domain = value.rsplit("@", 1)[-1].lower()
+                    assert domain in {"example.com", "example.net", "example.org"} or domain.endswith(
+                        (".test", ".example", ".invalid", ".localhost")
+                    )
+
+
+def test_adaptive_cli_requires_cem_artifact_flag() -> None:
+    with pytest.raises(SystemExit):
+        main(["adaptive"])
+
+
+def test_adaptive_cli_accepts_a_real_cem_mode_artifact(tmp_path) -> None:
+    """``secure-rag-eval cem --output`` nests its result under a "cem" key
+    (every mode does, via ``main()``'s shared ``results`` dict), not at the
+    artifact's top level -- --cem-artifact must accept that real shape, not
+    just a hand-crafted flat ``{"best_prefix": ...}`` file."""
+    cem_output_path = tmp_path / "cem.json"
+    assert main(["cem", "--quick", "--output", str(cem_output_path)]) == 0
+
+    adaptive_output_path = tmp_path / "adaptive.json"
+    assert main([
+        "adaptive",
+        "--cem-artifact", str(cem_output_path),
+        "--output", str(adaptive_output_path),
+    ]) == 0
+
+    result = json.loads(adaptive_output_path.read_text(encoding="utf-8"))
+    assert result["adaptive"]["summary"]["case_count"] == 60
+
+
+def test_cli_writes_ast_compatibility_artifact(tmp_path) -> None:
+    records_path = tmp_path / "plans.json"
+    records_path.write_text(
+        json.dumps(
+            [
+                {"case_id": "email-001", "raw_plan": "send_email('team@example.test', 'Status', 'On track')"},
+                {"case_id": "email-002", "raw_plan": "import os"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "ast_compat.json"
+
+    assert main([
+        "ast-compatibility",
+        "--records", str(records_path),
+        "--output", str(output_path),
+    ]) == 0
+
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    ast_compat = result["ast_compatibility"]
+
+    assert len(ast_compat["records"]) == 2
+    assert ast_compat["summary"]["case_count"] == 2
+    assert ast_compat["summary"]["accepted"] == 1
+    assert ast_compat["summary"]["rejection_categories"]["unsupported_node:Import"] == 1
+
+    manifest = ast_compat["manifest"]
+    assert isinstance(manifest["sha256"], str) and len(manifest["sha256"]) == 64
+    assert set(manifest["payload"]["completed_case_ids"]) == {"email-001::0", "email-002::1"}
+
+
+def test_ast_compatibility_cli_requires_records_flag() -> None:
+    with pytest.raises(SystemExit):
+        main(["ast-compatibility"])
+
+
+def test_ast_compatibility_cli_rejects_unknown_case_id(tmp_path) -> None:
+    records_path = tmp_path / "plans.json"
+    records_path.write_text(json.dumps([{"case_id": "not-a-real-case", "raw_plan": "1"}]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown case_id"):
+        main([
+            "ast-compatibility",
+            "--records", str(records_path),
+            "--output", str(tmp_path / "out.json"),
+        ])
