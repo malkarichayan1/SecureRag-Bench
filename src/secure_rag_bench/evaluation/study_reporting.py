@@ -24,15 +24,22 @@ is the supported entry point and the two modules below it are internal::
         v
     study_bundle_validation     internal
       artifact-specific validation chains (native stages, AST runs, adaptive
-      runs, splits, environment captures) and the dataclasses they produce
+      runs, splits, environment captures)
         |
-        v
-    study_bundle_io             internal
-      generic read-only primitives: file manifests, JSONL envelopes, digests,
-      secret scanning, JSON shape assertions
+        +---------------------------+
+        |                           |
+        v                           v
+    study_bundle_io             study_bundle_model
+      generic read-only             the frozen dataclasses a validated
+      primitives: file              bundle is made of (BundleModel,
+      manifests, JSONL              SplitManifest, NativeStage,
+      envelopes, digests,           NativeConfiguration, ASTRun,
+      secret scanning, JSON         AdaptiveRun, NativeReplayArtifact)
+      shape assertions
 
-The dependency arrow is strictly one-way; adding an import in the other
-direction would create a cycle.
+The two bottom modules are leaves: ``study_bundle_model`` imports nothing from
+this package at all. The dependency arrows are strictly one-way; adding an
+import in the other direction would create a cycle.
 
 ## Directory schema (``schema_version`` 1)
 
@@ -268,6 +275,15 @@ from secure_rag_bench.evaluation.study_bundle_io import (
     require_unique,
     validate_file_manifest,
 )
+from secure_rag_bench.evaluation.study_bundle_model import (
+    AdaptiveRun,
+    ASTRun,
+    BundleModel,
+    NativeConfiguration,
+    NativeReplayArtifact,
+    NativeStage,
+    SplitManifest,
+)
 from secure_rag_bench.evaluation.study_bundle_validation import (
     ADAPTIVE_SCHEMA_VERSION,
     AST_SCHEMA_VERSION,
@@ -276,13 +292,6 @@ from secure_rag_bench.evaluation.study_bundle_validation import (
     HELD_OUT_PER_ATTACK,
     HELD_OUT_SIZE,
     SPLIT_SCHEMA_VERSION,
-    AdaptiveRun,
-    ASTRun,
-    BundleModel,
-    NativeConfiguration,
-    NativeReplayArtifact,
-    NativeStage,
-    SplitManifest,
     load_splits,
     parse_models,
     validate_adaptive_run,
