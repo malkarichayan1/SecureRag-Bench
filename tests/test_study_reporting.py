@@ -652,6 +652,31 @@ def test_unexecuted_optional_model_is_absent_from_table_rows(tmp_path: Path) -> 
     assert "qwen-7b" in {row.model for row in tables.native_validity}
 
 
+def test_non_completed_ast_and_adaptive_runs_are_absent_from_table_rows(
+    tmp_path: Path,
+) -> None:
+    """The status gate applies to every table, not just the native one."""
+    bundle = fixture_bundle(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["ast_runs"][0].update(
+            {"status": "skipped", "status_reason": "model_unavailable"}
+        )
+        payload["adaptive_runs"][0].update(
+            {"status": "failed", "status_reason": "runner_error"}
+        )
+
+    edit_json(bundle, "bundle.json", mutate)
+
+    tables = build_paper_tables(validate_study_bundle(bundle.root))
+
+    assert tables.ast_compatibility == ()
+    assert tables.adaptive_monitor == ()
+    # The native table is unaffected, so this is a real exclusion rather than
+    # an empty bundle.
+    assert tables.native_validity != ()
+
+
 # --------------------------------------------------------------------------
 # Happy path
 # --------------------------------------------------------------------------
@@ -886,6 +911,45 @@ def test_skipped_configuration_requires_a_status_reason(tmp_path: Path) -> None:
     edit_json(bundle, "bundle.json", mutate)
 
     with pytest.raises(BundleValidationError, match="requires a non-empty 'status_reason'"):
+        validate_study_bundle(bundle.root)
+
+
+def test_duplicate_configuration_id_is_rejected(tmp_path: Path) -> None:
+    bundle = fixture_bundle(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        # Re-declaring the same configuration twice would double-count it in
+        # every table; each entry is individually valid, so only the
+        # uniqueness check can catch this.
+        payload["configurations"].append(payload["configurations"][0])
+
+    edit_json(bundle, "bundle.json", mutate)
+
+    with pytest.raises(BundleValidationError, match="duplicate configuration_id"):
+        validate_study_bundle(bundle.root)
+
+
+def test_duplicate_ast_run_id_is_rejected(tmp_path: Path) -> None:
+    bundle = fixture_bundle(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["ast_runs"].append(payload["ast_runs"][0])
+
+    edit_json(bundle, "bundle.json", mutate)
+
+    with pytest.raises(BundleValidationError, match="duplicate ast run_id"):
+        validate_study_bundle(bundle.root)
+
+
+def test_duplicate_adaptive_run_id_is_rejected(tmp_path: Path) -> None:
+    bundle = fixture_bundle(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["adaptive_runs"].append(payload["adaptive_runs"][0])
+
+    edit_json(bundle, "bundle.json", mutate)
+
+    with pytest.raises(BundleValidationError, match="duplicate adaptive run_id"):
         validate_study_bundle(bundle.root)
 
 

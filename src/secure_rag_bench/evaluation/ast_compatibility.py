@@ -39,7 +39,16 @@ class BenignPlanCase:
 
 @dataclass(frozen=True)
 class ASTCompatibilityRecord:
-    """Whether one raw plan was accepted by the restricted grammar and executed."""
+    """Whether one raw plan was accepted by the restricted grammar and executed.
+
+    .. warning::
+       This field set is the *de facto* AST record schema for study bundles.
+       If you add, remove, or rename a field here, update
+       ``study_bundle_validation._AST_RECORD_FIELDS`` in lockstep and bump
+       ``study_bundle_validation.AST_SCHEMA_VERSION`` -- bundle validation
+       compares the serialized record's key set against that constant exactly,
+       so a one-sided change makes every existing bundle fail to validate.
+    """
 
     case_id: str
     family: str

@@ -235,6 +235,14 @@ class AdaptiveRunRecord:
     See the module docstring for the independence guarantees behind
     ``retrieval_exposed`` / ``attempted_target_action`` /
     ``target_effect_executed`` and for the exact meaning of ``benign_success``.
+
+    .. warning::
+       This field set is the *de facto* adaptive record schema for study
+       bundles. If you add, remove, or rename a field here, update
+       ``study_bundle_validation._ADAPTIVE_RECORD_FIELDS`` in lockstep and bump
+       ``study_bundle_validation.ADAPTIVE_SCHEMA_VERSION`` -- bundle validation
+       compares the serialized record's key set against that constant exactly,
+       so a one-sided change makes every existing bundle fail to validate.
     """
 
     scenario_id: str
