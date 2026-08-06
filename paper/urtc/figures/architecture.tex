@@ -1,0 +1,44 @@
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      x=0.63cm,
+      y=0.72cm,
+      >=Latex,
+      flow/.style={->, semithick},
+      deny/.style={->, semithick, red!75!black},
+      box/.style={draw, rounded corners=1pt, align=center, font=\scriptsize,
+        minimum height=7mm, text width=15mm, inner sep=2pt},
+      guard/.style={box, fill=blue!6, text width=20mm},
+      source/.style={box, fill=gray!8, text width=13mm},
+      external/.style={box, fill=green!8, text width=14mm}
+    ]
+    \node[source] (user) at (0,1.25) {User\\objective};
+    \node[box] (planner) at (2.8,1.25) {Privileged\\planner};
+    \node[source] (retrieval) at (0,-0.25) {Retrieved\\content};
+    \node[box] (parser) at (2.8,-0.25) {Quarantined\\parser};
+    \node[guard] (monitor) at (6.1,0.50) {Restricted-AST interpreter\\+ reference monitor};
+    \node[box, text width=12mm] (gate) at (9.15,0.50) {Policy-gated\\dispatch};
+    \node[external] (tools) at (11.8,0.50) {Simulated\\external tools};
+
+    \draw[flow] (user) -- (planner);
+    \draw[flow] (retrieval) -- (parser);
+    \draw[flow] (planner) -- node[above, font=\tiny]{plan} (monitor);
+    \draw[flow] (parser) -- node[below, align=center, font=\tiny]
+      {values + source/\\reader labels} (monitor);
+    \draw[flow] (monitor) -- node[above, align=center, font=\tiny]
+      {four checks} (gate);
+    \draw[flow] (gate) -- node[above, font=\tiny]{allow} (tools);
+
+    \node[font=\tiny, align=center] (tooldata) at (6.2,-1.35)
+      {tool-sourced data\\headed externally};
+    \draw[flow] (monitor.south) -- (tooldata.north);
+    \draw[deny] (tooldata.east) -- node[above, font=\tiny]{deny} (8.75,-1.35);
+    \draw[red!75!black, very thick] (8.75,-1.78) -- (8.75,-0.92);
+    \node[red!75!black, font=\tiny, align=center] at (9.75,-1.35)
+      {denial\\boundary};
+  \end{tikzpicture}
+  \caption{Enforced data and control paths. Labels are carried into the
+  monitor; tool-sourced data meets an explicit denial boundary before any
+  simulated external effect.}
+  \label{fig:architecture}
+\end{figure}

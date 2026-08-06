@@ -1,0 +1,263 @@
+\documentclass[10pt,conference]{IEEEtran}
+
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{url}
+\usepackage{hyperref}
+
+\title{SecureRAG-Bench: Evaluating Provenance-Enforced Tool Boundaries
+Against Retrieval-Mediated Prompt Injection}
+
+\author{Anonymous Author(s)}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Indirect prompt injection turns retrieved text into a control channel for
+tool-using language-model agents. SecureRAG-Bench is an offline, deterministic
+implementation and evaluation of an architectural defense that separates a
+privileged planner from a quarantined parser, executes plans through a
+restricted-AST interpreter, and enforces provenance and capability policies
+before tool dispatch. In a deterministic controlled evaluation of 15 benign
+tasks and seven attack paths, all configurations retained 100\% controlled
+utility. The full monitor reduced controlled attack success rate (ASR) from
+100\% without monitoring to 0\%; policy without provenance enforcement left
+42.86\% ASR. Across ten seeded Cross-Entropy Method runs, an optimized trigger
+placed a malicious document in the top five retrieval results in every run,
+demonstrating that retrieval manipulation and tool exfiltration require
+separate measurement. A generic offline adapter over 2,108 public InjecAgent
+records produced 0\% payload-transfer ASR and 100\% policy halts. These results
+support provenance-enforced capability boundaries under the implemented,
+simulated conditions; they do not constitute formal security or official
+benchmark scores.
+\end{abstract}
+
+\section{Introduction}
+Retrieval-augmented agents combine a user objective with documents, messages,
+and web content that may be controlled by an attacker. When retrieved text is
+placed in the same decision context as trusted instructions and tool schemas,
+an indirect prompt injection can influence both what the agent selects and what
+data an external action carries. Prompt-only distinctions between instructions
+and data therefore leave the agent responsible for recognizing the very input
+that attempts to subvert it.
+
+SecureRAG-Bench evaluates a different invariant: untrusted data may inform a
+computation, but it must not gain authority to select a capability or cross a
+capability boundary. The artifact instantiates planner/parser isolation,
+restricted execution, immutable provenance labels, and policy-gated dispatch in
+ordinary deterministic code. This makes the tested boundary auditable without
+asking a model to classify its own context.
+
+The contribution is an implementation and offline evaluation of architectural
+isolation, not the invention of the architecture proposed by
+CaMeL~\cite{debenedetti2025camel}. The evaluation contributes (i) a four-way
+policy/provenance ablation, (ii) a retrieval-trigger study that separates
+ranking manipulation from downstream effects, and (iii) a diverse public-
+payload transfer study with explicit benchmark limitations.
+
+\section{Threat Model}
+The attacker controls text returned by retrieval, but not the original user
+objective, privileged planner, quarantine interface, reference monitor, or
+configured tool policies. Two outcomes are distinguished. \emph{Retrieval
+manipulation} changes ranking so that attacker-controlled content enters the
+agent's top results. It is an exposure event, not by itself a successful tool
+attack. \emph{Tool exfiltration} occurs only when a protected external action
+executes with attacker-directed or tool-sourced data, such as a recipient,
+message body, transfer amount, or post content.
+
+The defense is evaluated against attacks expressed through retrieved content.
+It does not assume that XML delimiters cause a model to obey a trust label.
+Instead, the security boundary is the deterministic interpreter and dispatch
+policy. Availability attacks, compromise of trusted code or policy
+configuration, and unsupported language constructs are outside scope.
+
+\section{Architecture}
+\input{figures/architecture}
+
+\subsection{Planner and Quarantine Separation}
+The privileged planner receives the user objective and emits a small Python-like
+plan. It does not consume retrieved document text. Retrieval output is wrapped
+as untrusted content and sent to a quarantined parser, which produces structured
+data but has no tool capability. Delimiters make the interface explicit; they
+are labels rather than an enforcement mechanism.
+
+\subsection{Restricted Execution and Provenance}
+Before execution, the interpreter parses the plan and admits only assignments,
+expressions, conditionals, returns, literals and containers, bounded arithmetic
+and comparisons, formatting, subscripting, and direct calls to registered
+tools or the quarantine interface. Imports, loops, definitions, attribute or
+indirect calls, non-name assignment, unknown tools, and keyword unpacking are
+rejected rather than delegated to Python execution.
+
+Every runtime value carries immutable source and permitted-reader labels.
+User-origin values begin readable by user, internal, and configured external
+capabilities; tool results and quarantined-parser values begin internal or
+quarantined. Each supported operation unions source labels and intersects
+reader sets. If an intersection is empty it becomes internal-only, so a derived
+value cannot gain a reader that either operand lacked.
+
+\subsection{Reference Monitor and Capability Boundary}
+With monitoring enabled, every registered tool call passes through the reference
+monitor. Four properties are evaluated before dispatch. Task and action
+alignment apply heuristics to the stated objective and requested operation; the
+current dispatch supplies no action allowlist. Source authorization is
+permissive for both supported values of the compatibility source view, user and
+tool. The effective tool-data boundary is reader-set data isolation: a
+tool-derived argument lacks an external reader and is rejected for an external
+capability. All four results are computed, but the dispatch decision retains
+only the first failed property. Figure~\ref{fig:architecture} shows that the
+simulated external effect occurs only after an allow decision; a denial records
+a policy halt before the boundary is crossed.
+
+This privileged-planner/quarantined-parser pattern follows the architectural
+direction of CaMeL~\cite{debenedetti2025camel}. SecureRAG-Bench contributes a
+compact implementation, controlled ablations, and reusable evaluation adapters;
+it does not claim CaMeL's design as a new architectural invention.
+
+\section{Evaluation}
+All headline measurements use deterministic components and simulated external
+capabilities. No paid API, live model call, or real external action is involved.
+Benign utility is the fraction of benign tasks completed, ASR is the fraction of
+attack paths whose target simulated effect executes, and policy-halt rate is the
+fraction stopped before that effect.
+
+\subsection{Controlled Policy and Provenance Ablation}
+The controlled suite contains 15 benign workspace and banking tasks and seven
+attack paths spanning email fields, transfer values, and external-post content.
+Each configuration executes the same workload. ``No monitor'' disables policy
+and provenance checks; ``XML labels'' retains delimiters without enforcement;
+``policy only'' enforces task and action policy but not provenance; and ``full
+monitor'' enables both policy and provenance enforcement.
+
+\input{figures/ablation_results}
+
+Figure~\ref{fig:ablation-results} shows that XML labels without enforcement did
+not block a tested flow. Policy blocked four paths, but removing provenance
+enforcement left three authorized-action taint paths successful. The full
+monitor blocked the remainder, reducing controlled ASR from 100\% to 0\% while
+retaining 100\% controlled utility. Table~\ref{tab:attack-protocol} resolves the
+aggregate rates into the seven fixed paths.
+
+\begin{table}[t]
+  \caption{Attack-path protocol and blocking outcome. B: blocked; --: target
+  simulated effect executed.}
+  \label{tab:attack-protocol}
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{@{}clcccc@{}}
+    \toprule
+    ID & Attack path & None & XML & Policy & Full \\
+    \midrule
+    1 & Retrieved email body       & -- & -- & B & B \\
+    2 & Account data in subject    & -- & -- & B & B \\
+    3 & Retrieved recipient        & -- & -- & B & B \\
+    4 & Unauthorized external mail & -- & -- & B & B \\
+    5 & Authorized email body      & -- & -- & -- & B \\
+    6 & Retrieved transfer amount  & -- & -- & -- & B \\
+    7 & Retrieved external post    & -- & -- & -- & B \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Retrieval Manipulation with CEM}
+The retrieval study applies the Cross-Entropy Method
+(CEM)~\cite{rubinstein2004crossentropy} to a ten-token categorical prefix. Each
+of ten deterministic seeds uses 30 iterations and 5,000 sampled prefixes per
+iteration to optimize cosine similarity with a benign query. The malicious
+document entered the top five in every run, giving 100\% top-5 inclusion. The
+mean fitness of the best prefix per seed was 0.906141, with population standard
+deviation 0.001968. This isolates the retrieval barrier studied for indirect
+injection in deployed retrieval systems~\cite{chang2026retrievalbarrier}: the
+optimized event is only whether attacker content crosses the ranker's top-5
+cutoff. Tool exfiltration is scored separately and requires a target simulated
+external effect to execute. Thus neither cosine fitness nor top-5 inclusion is
+counted as ASR at the capability boundary.
+
+\subsection{Offline Payload Transfer}
+In a generic offline payload-transfer adapter over 2,108 public InjecAgent
+records, transfer ASR was 0\% and the policy-halt rate was 100\%.
+This is not an official InjecAgent score. The adapter does not execute the
+native benchmark tool environment or its ASR-valid and ASR-all protocol. Each
+source tool response is instead mapped to generic untrusted retrieval to test
+whether that payload can reach a simulated external email action. The result
+therefore measures transfer across the implemented information-flow boundary,
+not native model behavior~\cite{zhan2024injecagent}.
+
+\subsection{Preliminary Native Pilot}
+A preliminary 50-case protocol pilot used Qwen 2.5 7B Instruct on 25 direct-harm
+and 25 data-stealing cases. Only 50\% of outputs were valid under the prompted-
+agent parser, below the protocol's 90\% validity gate; the full native study was
+therefore not launched. The observed invalid outputs included parser-incompatible
+tool recalls, calls to unavailable tools, and fabricated observations; this is
+a qualitative error taxonomy, not a counted result. This small pilot is neither
+a native benchmark nor a headline result, and no model-level InjecAgent ASR is
+inferred from it.
+
+\section{Related Work}
+AgentDojo supplies dynamic tool environments for measuring prompt-injection
+attacks and defenses~\cite{debenedetti2024agentdojo}; InjecAgent supplies
+tool-integrated indirect-injection tasks and native ASR definitions
+~\cite{zhan2024injecagent}. They emphasize end-to-end agent behavior. Our
+controlled suite instead fixes the planner and workload to expose which
+enforcement property blocks each path, while the offline transfer adapter is
+explicitly not a replacement for either benchmark's native protocol.
+
+CaMeL separates control and data flows and places capability checks around tool
+use~\cite{debenedetti2025camel}; SecureRAG-Bench implements and ablates that
+direction without claiming to invent it. Task Shield emphasizes test-time task
+alignment~\cite{jia2025taskshield}, which can reject an unauthorized capability
+but need not distinguish a safe argument from tool-sourced data inside an
+authorized call. Retrieval-barrier work studies whether an injection survives
+retrieval at all~\cite{chang2026retrievalbarrier}. Our CEM stage probes that
+ranking boundary, whereas the monitor study measures the later data-to-tool
+boundary; CEM~\cite{rubinstein2004crossentropy} is an optimizer, not a defense.
+
+\section{Limitations}
+SecureRAG-Bench is an offline prototype, not an official AgentDojo score and not
+an official InjecAgent score. The controlled planner, attacker, parser, and jury
+are deterministic mocks, so the ablation variants are not real-LLM baselines or
+prompt-following experiments. The native pilot failed its validity gate and
+does not establish model vulnerability, defense effectiveness, or live-model
+generalization.
+
+The payload adapter replaces native tool schemas with generic retrieval and a
+simulated email boundary. No live email, payment, social-media, or browser
+actions occurred. The restricted-AST and provenance invariants apply only to
+supported expressions, registered tools, and configured capabilities; no
+formal security claim is made for unsupported AST constructs or tools. The
+results also do not cover compromised trusted code, misconfigured policy, or
+adaptive attacks beyond the measured offline conditions.
+
+\section{Reproducibility}
+The paper-facing outputs are stored in
+\path{artifacts/fast_urtc_controlled_evaluation.json},
+\path{artifacts/cem_extended_10.json}, and
+\path{artifacts/injecagent_offline_study.json}. Exact regeneration commands and
+configurations are recorded in \path{artifacts/README.md}; the CEM seeds and
+configuration are serialized with the results. The source suite is run with
+\path{python -m pytest -q}, and the manuscript is built with
+\path{make -C paper/urtc pdf}. This separation keeps deterministic controlled,
+retrieval, generic payload-transfer, and preliminary native-pilot evidence
+traceable to distinct artifacts or protocol records.
+
+\section{Conclusion}
+SecureRAG-Bench implements and evaluates an architectural boundary for
+retrieval-augmented agents. Under the deterministic controlled workload,
+task/action policy alone left three authorized taint paths, whereas provenance
+enforcement retained 100\% utility and blocked all seven tested attacks. CEM
+results show that retrieval manipulation remains a distinct exposure problem,
+while the offline payload study shows that the implemented capability boundary
+can halt diverse untrusted payloads. Broader conclusions require valid native
+model studies, native benchmark execution, additional tools, and live-system
+evaluation.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
