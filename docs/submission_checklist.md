@@ -1,5 +1,13 @@
 # MIT URTC Submission Checklist
 
+This repository carries **two** manuscripts. The sections below through
+"Before submission" track the offline/deterministic draft
+(`docs/paper_draft.md`, `output/pdf/securerag_bench_offline_draft.pdf`). The
+final section, "Native validity / adaptive-attack manuscript
+(`paper/urtc/`)", tracks the separate `paper/urtc/main.tex` manuscript, which
+is not ready for any of the steps below until it is unblocked -- see that
+section and `docs/submission_readiness.md`.
+
 ## Deadline and eligibility
 
 - [ ] Confirm the 2026 technical-paper deadline in the official submission
@@ -34,3 +42,35 @@
 - [x] Re-run the commands used for paper tables and verify primary artifact hashes (2026-07-28).
 - [x] Verify repository installation, tests, and local PDF generation from a clean temporary environment (2026-07-28).
 - [ ] Upload before the portal deadline; do not wait for the final hour.
+
+## Native validity / adaptive-attack manuscript (`paper/urtc/`)
+
+This is a second, separate manuscript from the offline draft above (see
+`docs/submission_readiness.md`'s "`paper/urtc/main.tex` native-validity
+manuscript: status BLOCKED" section for the authoritative status). Every
+item below is honestly **not yet done** -- no real Kaggle bundle has been
+produced or imported as of this writing, and none of these steps can be
+checked off until one has:
+
+- [ ] Run `notebooks/securerag_native_adaptive_kaggle.ipynb` end-to-end on a
+  Kaggle GPU instance for at least one qualifying model (README.md's "Kaggle
+  native validity and adaptive attack study" section documents the full
+  workflow: GPU/HF-token setup, the 90% held-out validity gate, checkpoint
+  resumability, and bundle export).
+- [ ] Download the exported study bundle and import it locally with
+  `python scripts/import_study_bundle.py <bundle>.zip --output-dir
+  paper/generated`, confirming it passes `validate_study_bundle` and that
+  `paper/generated/` now contains real (not `.gitkeep`-only) generated
+  tables, plot data, and `macros.tex`.
+- [ ] Build `paper/urtc/main.tex` with `make -C paper/urtc pdf` and run
+  `python scripts/verify_urtc_pdf.py
+  output/pdf/securerag_bench_urtc_draft.pdf`.
+- [ ] Visually inspect every rendered PDF page (clipped text, overlapping
+  tables, broken references, unreadable plots, page overflow).
+- [ ] Check every quantitative claim in the built manuscript against
+  `docs/claim_traceability.md`'s `paper/urtc/main.tex` table.
+- [ ] Only after all of the above, update `docs/submission_readiness.md` to
+  move this manuscript's status off BLOCKED.
+- [ ] Confirm 2026 MIT URTC deadline, template, anonymity, authorship, and
+  eligibility requirements apply the same way to this manuscript as to the
+  offline draft above before treating it as submission-ready.
