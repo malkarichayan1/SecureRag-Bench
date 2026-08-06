@@ -96,18 +96,60 @@ def test_optional_or_unexecuted_models_are_marked_optional() -> None:
     assert "Claude" not in source or "optional" in source.lower()
 
 
-_GENERATED_INPUT_PATTERN = re.compile(r"\\input\{(?:\.\./)+generated/([^}]+)\}")
+#: Captures the run of ``../`` segments (group 1, so its length is checkable)
+#: separately from the target filename (group 2). Matching *any* number of
+#: ``../`` deliberately -- rejecting a wrong depth is ``test_every_generated_
+#: input_uses_the_correct_relative_depth``'s job below, not this pattern's.
+_GENERATED_INPUT_PATTERN = re.compile(r"\\input\{((?:\.\./)+)generated/([^}]+)\}")
+
+#: latexmk compiles from paper/urtc/ (see paper/urtc/Makefile's ``pdf``
+#: target: it runs latexmk with cwd already inside paper/urtc/). ``\input``
+#: paths inside *any* file that ends up in that compile -- including a file
+#: reached transitively through a nested ``\input``, such as
+#: figures/native_validity.tex being \input from main.tex -- resolve
+#: relative to that one compile-wide cwd, not relative to the directory of
+#: the file containing the \input command. paper/generated/ is exactly one
+#: level above paper/urtc/, so every \input{.../generated/...} anywhere in
+#: the compile must use exactly one '../', regardless of which subdirectory
+#: the referencing .tex file physically lives in.
+_EXPECTED_GENERATED_INPUT_DEPTH = 1
+
+
+def _generated_inputs_with_depth() -> list[tuple[Path, str, int]]:
+    """``(source_file, target_filename, '../' count)`` for every
+    ``\\input{.../generated/X}`` in ``main.tex`` or a ``figures/*.tex`` file."""
+    entries: list[tuple[Path, str, int]] = []
+    tex_files = [MANUSCRIPT_DIRECTORY / "main.tex", *sorted((MANUSCRIPT_DIRECTORY / "figures").glob("*.tex"))]
+    for tex_file in tex_files:
+        text = tex_file.read_text(encoding="utf-8")
+        for match in _GENERATED_INPUT_PATTERN.finditer(text):
+            entries.append((tex_file, match.group(2), match.group(1).count("../")))
+    return entries
 
 
 def _generated_input_targets() -> set[str]:
     """Every filename ``main.tex`` or a ``figures/*.tex`` file ``\\input``s
     from ``paper/generated/``, resolved to a bare filename."""
-    targets: set[str] = set()
-    tex_files = [MANUSCRIPT_DIRECTORY / "main.tex", *sorted((MANUSCRIPT_DIRECTORY / "figures").glob("*.tex"))]
-    for tex_file in tex_files:
-        text = tex_file.read_text(encoding="utf-8")
-        targets.update(match.group(1) for match in _GENERATED_INPUT_PATTERN.finditer(text))
-    return targets
+    return {target for _, target, _ in _generated_inputs_with_depth()}
+
+
+def test_every_generated_input_uses_the_correct_relative_depth() -> None:
+    """A ``figures/*.tex`` file reached via a nested ``\\input`` must still use
+    the *compile-relative* one-level ``../generated/...`` path main.tex uses
+    directly, not an extra level as if resolving relative to figures/'s own
+    location (that extra level was Task 5's original, now-fixed, bug)."""
+    entries = _generated_inputs_with_depth()
+
+    assert entries, "expected at least one \\input{.../generated/...} reference"
+    for tex_file, target, depth in entries:
+        assert depth == _EXPECTED_GENERATED_INPUT_DEPTH, (
+            f"{tex_file.relative_to(REPOSITORY_ROOT).as_posix()} has "
+            f"\\input{{{'../' * depth}generated/{target}}} using {depth} level(s) of '../'; "
+            f"latexmk compiles from paper/urtc/, exactly {_EXPECTED_GENERATED_INPUT_DEPTH} "
+            "level above paper/generated/, so every such \\input -- in main.tex or any file it "
+            "transitively \\inputs -- must use exactly that many, regardless of which "
+            "subdirectory the referencing file lives in"
+        )
 
 
 def test_every_generated_input_target_is_covered_by_the_makefile_guard() -> None:
