@@ -10,12 +10,10 @@ import subprocess
 from typing import Any, Mapping, Protocol, Sequence
 
 from secure_rag_bench.evaluation.model_adapters import (
-    ClaudeAdapter,
     GenerationRequest,
     GenerationResult,
     ModelAdapter,
-    OpenAICompatibleAdapter,
-    TransformersAdapter,
+    build_adapter_from_config,
 )
 from secure_rag_bench.evaluation.native_analysis import (
     evaluate_validity_gate,
@@ -658,7 +656,7 @@ def run_local_injecagent(
             assert effective_model_id is not None
             adapter: ModelAdapter = _TextGeneratorAdapter(generator, effective_model_id)
         elif configuration:
-            adapter = _adapter_from_model_configuration(configuration)
+            adapter = build_adapter_from_config(configuration)
         else:
             assert effective_model_id is not None
             adapter = _TextGeneratorAdapter(QwenGenerator(effective_model_id), effective_model_id)
@@ -756,31 +754,6 @@ def _load_model_configuration(
     if not isinstance(payload, dict):
         raise ValueError("model-config must contain a JSON object")
     return payload
-
-
-def _adapter_from_model_configuration(configuration: Mapping[str, Any]) -> ModelAdapter:
-    provider = configuration.get("provider", "transformers")
-    model_id = str(configuration["model_id"])
-    if provider == "transformers":
-        return TransformersAdapter(
-            model_id,
-            revision=configuration.get("revision"),
-            dtype=str(configuration.get("dtype", "float16")),
-            quantization=str(configuration.get("quantization", "none")),
-        )
-    if provider == "openai_compatible":
-        return OpenAICompatibleAdapter(
-            model_id,
-            str(configuration["base_url"]),
-            api_key_env=str(configuration.get("api_key_env", "OPENAI_API_KEY")),
-        )
-    if provider == "claude":
-        return ClaudeAdapter(
-            model_id,
-            base_url=str(configuration.get("base_url", "https://api.anthropic.com")),
-            api_key_env=str(configuration.get("api_key_env", "ANTHROPIC_API_KEY")),
-        )
-    raise ValueError(f"unsupported model-config provider: {provider}")
 
 
 def _match_replay_value(name: str, supplied: Any, recorded: Any) -> Any:

@@ -25,6 +25,7 @@ dev = [
     "pytest-cov>=4.1",
     "pypdf>=5.0",
     "reportlab>=4.0",
+    "nbformat>=5.10",
 ]
 agentdojo = [
     "agentdojo>=0.1.0",

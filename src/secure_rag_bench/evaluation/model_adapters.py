@@ -275,6 +275,42 @@ class ClaudeAdapter:
         )
 
 
+def build_adapter_from_config(configuration: Mapping[str, Any]) -> ModelAdapter:
+    """Construct the real adapter a catalog/model-config mapping describes.
+
+    The single, shared provider dispatch: every caller that needs to turn a
+    ``{"provider": ..., "model_id": ..., ...}`` mapping (a
+    ``configs/native_study_models.json`` entry, a ``--model-config`` JSON
+    file, or equivalent) into a live ``ModelAdapter`` must go through this
+    function rather than re-implementing the ``provider`` switch, so a field
+    this dispatch honors (e.g. a pinned ``revision``, a custom ``base_url``,
+    or a non-default ``api_key_env``) can never silently work in one caller
+    and not another.
+    """
+    provider = configuration.get("provider", "transformers")
+    model_id = str(configuration["model_id"])
+    if provider == "transformers":
+        return TransformersAdapter(
+            model_id,
+            revision=configuration.get("revision"),
+            dtype=str(configuration.get("dtype", "float16")),
+            quantization=str(configuration.get("quantization", "none")),
+        )
+    if provider == "openai_compatible":
+        return OpenAICompatibleAdapter(
+            model_id,
+            str(configuration["base_url"]),
+            api_key_env=str(configuration.get("api_key_env", "OPENAI_API_KEY")),
+        )
+    if provider == "claude":
+        return ClaudeAdapter(
+            model_id,
+            base_url=str(configuration.get("base_url", "https://api.anthropic.com")),
+            api_key_env=str(configuration.get("api_key_env", "ANTHROPIC_API_KEY")),
+        )
+    raise ValueError(f"unsupported model-config provider: {provider}")
+
+
 def _torch_dtype(torch: Any, dtype: str) -> Any:
     try:
         return getattr(torch, dtype)
