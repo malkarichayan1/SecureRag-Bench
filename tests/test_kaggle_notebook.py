@@ -59,6 +59,22 @@ def test_stage_cells_are_unique_and_exactly_five() -> None:
     assert stages == EXPECTED_STAGE_ORDER
 
 
+def test_setup_cell_does_not_clone_directly_into_the_working_directory() -> None:
+    """``/kaggle/working`` is not guaranteed empty, so ``git clone <url> .`` is unsafe.
+
+    Kaggle may seed the working directory with kernel metadata or an
+    autosaved notebook copy before this cell ever runs, which makes a
+    direct-into-``.`` clone fail with "destination path '.' already exists
+    and is not an empty directory." The setup cell must clone into a
+    scratch path and copy the contents over instead.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    cell = next(cell for cell in notebook.cells if cell.get("id") == "cell-setup")
+    assert "git clone" in cell.source
+    assert "git clone --depth 1 https://github.com/malkarichayan1/SecureRag-Bench.git ." not in cell.source
+    assert "cp -a" in cell.source
+
+
 def test_preflight_cell_prints_only_credential_presence_booleans() -> None:
     notebook = nbformat.read(NOTEBOOK, as_version=4)
     cell = _cell_for_stage(notebook, "preflight")

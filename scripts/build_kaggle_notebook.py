@@ -100,11 +100,23 @@ _CELL_SETUP = _source(
     """
     # If the repository is not already present in the Kaggle working
     # directory, clone it. Skip this if you attached the repo as a dataset.
+    #
+    # ``/kaggle/working`` is not guaranteed to be an empty directory (Kaggle
+    # may seed it with kernel metadata or an autosaved notebook copy before
+    # this cell ever runs), so ``git clone <url> .`` reliably fails there
+    # with "destination path '.' already exists and is not an empty
+    # directory." Clone into a scratch directory instead, then copy its
+    # contents -- including dotfiles -- into the working directory and
+    # remove the scratch clone, which succeeds regardless of what else is
+    # already present.
     import pathlib
 
     if not pathlib.Path("pyproject.toml").exists():
         get_ipython().system(
-            "git clone --depth 1 https://github.com/malkarichayan1/SecureRag-Bench.git ."
+            "git clone --depth 1 https://github.com/malkarichayan1/SecureRag-Bench.git "
+            "/tmp/securerag-bench-src "
+            "&& cp -a /tmp/securerag-bench-src/. . "
+            "&& rm -rf /tmp/securerag-bench-src"
         )
 
     get_ipython().system("pip install -q -e .[local-injecagent]")
