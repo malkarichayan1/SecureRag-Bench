@@ -9,6 +9,7 @@ temporary output directory -- real code paths, no GPU and no network.
 
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import zipfile
@@ -57,6 +58,38 @@ def test_stage_cells_are_unique_and_exactly_five() -> None:
     stages = [cell.metadata.get("stage") for cell in notebook.cells if cell.metadata.get("stage")]
     assert len(stages) == len(EXPECTED_STAGE_ORDER)
     assert stages == EXPECTED_STAGE_ORDER
+
+
+_VALUE_RETURNING_METHOD_NAMES = frozenset({"write_text", "write_bytes"})
+
+
+def test_no_code_cell_ends_with_a_bare_value_returning_call() -> None:
+    """``Path.write_text``/``write_bytes`` return the count of chars/bytes written.
+
+    If a call like that is the last top-level statement in a cell (not
+    assigned to anything), Jupyter's displayhook auto-displays the return
+    value as a confusing, undocumented trailing ``Out[]`` value underneath
+    the cell's real printed output (e.g. a stray ``481`` under the preflight
+    summary). Statements nested inside a compound statement (``for``/``if``)
+    are never auto-displayed regardless of their value, so only the cell's
+    final top-level statement matters. Guard against this for every code
+    cell, not just the one instance already found and fixed.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    for cell in notebook.cells:
+        if cell.cell_type != "code":
+            continue
+        module = ast.parse(cell.source)
+        if not module.body:
+            continue
+        last_statement = module.body[-1]
+        if not isinstance(last_statement, ast.Expr) or not isinstance(last_statement.value, ast.Call):
+            continue
+        called_method = getattr(last_statement.value.func, "attr", None)
+        assert called_method not in _VALUE_RETURNING_METHOD_NAMES, (
+            f"cell tagged {cell.metadata.get('stage') or cell.metadata.get('tags')} ends with a bare, "
+            f"unassigned call to `.{called_method}(...)`, which Jupyter will auto-display as a stray value"
+        )
 
 
 def test_setup_cell_does_not_clone_directly_into_the_working_directory() -> None:

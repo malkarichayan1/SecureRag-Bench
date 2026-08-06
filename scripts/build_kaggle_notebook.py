@@ -271,7 +271,10 @@ _CELL_PREFLIGHT = _source(
     }
 
     ENVIRONMENT_CAPTURE_PATH = OUTPUT_ROOT / "environment" / "kaggle-run.json"
-    ENVIRONMENT_CAPTURE_PATH.write_text(
+    # Assign the return value (characters written) rather than leaving this
+    # as a bare expression statement -- otherwise Jupyter auto-displays it
+    # as a stray trailing integer under the preflight summary above.
+    _ = ENVIRONMENT_CAPTURE_PATH.write_text(
         json.dumps(
             {
                 "schema_version": 1,
