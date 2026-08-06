@@ -479,6 +479,23 @@ _CELL_PILOT = _source(
             f"gate.passed={gate.passed}"
             + ("" if gate.passed else f" reasons={list(gate.reasons)}")
         )
+        # "runner_error" in gate.reasons means every case's coarse status was
+        # already visible above, but the actual exception text that caused
+        # it is not -- it only lives in the checkpoint records. Surface one
+        # sample here so a failing pilot doesn't require manually opening
+        # the checkpoint file to find out what actually went wrong.
+        if "runner_error" in gate.reasons:
+            sample_error = next(
+                (
+                    value
+                    for record in pilot_records.values()
+                    for key, value in record.items()
+                    if str(key).startswith("runner_error") and value
+                ),
+                None,
+            )
+            if sample_error is not None:
+                print(f"  sample runner error for {model_name}: {sample_error}")
 
         info.update(
             {

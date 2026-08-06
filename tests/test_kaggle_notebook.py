@@ -257,6 +257,16 @@ class FixedTextGenerator:
         return self.text
 
 
+class FailingTextGenerator:
+    """A ``TextGenerator`` fake that always raises, simulating a runner error."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def generate(self, system_prompt: str, user_prompt: str) -> str:
+        raise RuntimeError(self.message)
+
+
 class FixedModelAdapter:
     """A minimal ``ModelAdapter`` fake for the AST plan-generation cell."""
 
@@ -433,3 +443,30 @@ def test_cpu_smoke_pilot_writes_manifest_and_gate_summary(tmp_path: Path, monkey
     assert manifest_path.exists()
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest_payload["payload"]["expected_case_ids"] == namespace["held_out_ids"]
+
+
+def test_cpu_smoke_pilot_prints_a_sample_runner_error_when_the_gate_fails_with_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``runner_error`` gate reason must come with an actual sample error message.
+
+    The gate summary line only prints coarse reason codes like
+    ``runner_error`` -- the real exception text (e.g. a CUDA/bitsandbytes
+    failure) only lives inside the checkpoint records. Without surfacing a
+    sample, debugging a fully-failed pilot requires manually opening the
+    checkpoint file.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    namespace = _base_namespace(tmp_path, monkeypatch)
+    namespace["TEST_GENERATOR_FACTORY"] = lambda catalog_entry: FailingTextGenerator(
+        "simulated CUDA out of memory error"
+    )
+
+    cells = _cpu_smoke_cells(notebook)
+    pilot_index = next(index for index, cell in enumerate(cells) if cell.metadata.get("stage") == "pilot")
+    for cell in cells[: pilot_index + 1]:
+        _exec_cell(cell, namespace)
+
+    assert "runner_error" in namespace["configurations"]["qwen-7b"]["gate"].reasons
+    captured = capsys.readouterr()
+    assert "simulated CUDA out of memory error" in captured.out
