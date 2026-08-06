@@ -109,6 +109,30 @@ def test_setup_cell_does_not_clone_directly_into_the_working_directory() -> None
     assert "cp -a" in cell.source
 
 
+def test_setup_cell_clones_the_branch_that_actually_has_the_study_code() -> None:
+    """Cloning without ``--branch`` checks out the repository's *default* branch.
+
+    This repository's default branch (``main``) holds only planning docs --
+    the study implementation (``native_cases.py`` and everything else the
+    later cells import) lives on a feature branch. A clone missing
+    ``--branch`` silently succeeds but produces a checkout that fails several
+    cells later with a confusing ``ModuleNotFoundError``, not an obvious
+    clone error.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    cell = next(cell for cell in notebook.cells if cell.get("id") == "cell-setup")
+    assert "--branch" in cell.source
+    assert 'SOURCE_GIT_REF = "codex/native-validity-adaptive"' in cell.source
+
+
+def test_setup_cell_fails_fast_if_the_checkout_is_missing_study_code() -> None:
+    """A silently-failed clone/install must not be discovered several cells later."""
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    cell = next(cell for cell in notebook.cells if cell.get("id") == "cell-setup")
+    assert "native_cases.py" in cell.source
+    assert "raise RuntimeError(" in cell.source
+
+
 def test_preflight_cell_prints_only_credential_presence_booleans() -> None:
     notebook = nbformat.read(NOTEBOOK, as_version=4)
     cell = _cell_for_stage(notebook, "preflight")

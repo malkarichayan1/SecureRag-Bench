@@ -109,17 +109,35 @@ _CELL_SETUP = _source(
     # contents -- including dotfiles -- into the working directory and
     # remove the scratch clone, which succeeds regardless of what else is
     # already present.
+    #
+    # This study's implementation lives on a feature branch, not the
+    # repository's default branch -- cloning without --branch silently
+    # checks out a tree missing this study's code entirely, which then only
+    # surfaces several cells later as a confusing ModuleNotFoundError.
     import pathlib
+
+    SOURCE_GIT_REF = "codex/native-validity-adaptive"
 
     if not pathlib.Path("pyproject.toml").exists():
         get_ipython().system(
-            "git clone --depth 1 https://github.com/malkarichayan1/SecureRag-Bench.git "
+            f"git clone --depth 1 --branch {SOURCE_GIT_REF} "
+            "https://github.com/malkarichayan1/SecureRag-Bench.git "
             "/tmp/securerag-bench-src "
             "&& cp -a /tmp/securerag-bench-src/. . "
             "&& rm -rf /tmp/securerag-bench-src"
         )
 
     get_ipython().system("pip install -q -e .[local-injecagent]")
+
+    # Fail fast, here, if the clone or install silently didn't produce a
+    # working checkout -- scroll up to the git/pip output above for the
+    # underlying error rather than debugging a downstream ImportError.
+    if not pathlib.Path("src/secure_rag_bench/evaluation/native_cases.py").exists():
+        raise RuntimeError(
+            "setup failed: src/secure_rag_bench/evaluation/native_cases.py is missing after "
+            f"clone+install from branch '{SOURCE_GIT_REF}'. Check the git/pip output above for "
+            "the underlying error before continuing to later cells."
+        )
     """
 )
 
