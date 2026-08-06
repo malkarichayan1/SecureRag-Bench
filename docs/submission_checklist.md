@@ -38,7 +38,12 @@ section and `docs/submission_readiness.md`.
 
 ## Before submission
 
-- [x] Re-run the full test suite (clean-environment run: 48 tests passed on 2026-07-28).
+- [x] Re-run the full test suite (clean-environment run: 48 tests passed on
+  2026-07-28). **Stale:** the suite has grown roughly tenfold since Tasks
+  1-5 landed; a 2026-08-06 run reported 462 passed and 2 pre-existing
+  failures unrelated to this checklist (`tests/test_urtc_latex_pdf.py`'s
+  Make-toolchain-gated tests -- see the "Native validity / adaptive-attack
+  manuscript" section below).
 - [x] Re-run the commands used for paper tables and verify primary artifact hashes (2026-07-28).
 - [x] Verify repository installation, tests, and local PDF generation from a clean temporary environment (2026-07-28).
 - [ ] Upload before the portal deadline; do not wait for the final hour.

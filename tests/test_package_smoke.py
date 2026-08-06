@@ -32,6 +32,6 @@ def test_readme_documents_free_baselines_as_non_official() -> None:
 
 
 def test_readme_documents_kaggle_gate_resume_and_bundle_import() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
+    readme = " ".join(Path("README.md").read_text(encoding="utf-8").lower().split())
     for phrase in ("90% validity gate", "resume", "export_study_bundle.py", "import_study_bundle.py"):
         assert phrase in readme

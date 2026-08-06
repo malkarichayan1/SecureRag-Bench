@@ -168,7 +168,8 @@ runs to unblock it.
    `gate.passed`. This is the **90% validity gate**: a model qualifies only if
    at least 90% of its held-out pilot cases are protocol-valid with no
    runner, traceability, or integrity failure
-   (`evaluate_validity_gate` in `docs/native_injecagent_protocol.md`). A
+   (`evaluate_validity_gate` in
+   `src/secure_rag_bench/evaluation/native_analysis.py`). A
    qualifying model proceeds to stage 3 automatically. A model that fails the
    gate stops stage 3 (`full_native`) with `RuntimeError("validity gate not
    passed")` before that model's full run starts -- it does not silently
