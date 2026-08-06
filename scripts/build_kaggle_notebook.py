@@ -293,8 +293,16 @@ _CELL_PREFLIGHT = _source(
             if gpu_available
             else []
         )
+        # Sum across every visible GPU, not just device 0: the transformers
+        # adapter loads with device_map="auto", which shards a model across
+        # all visible GPUs via accelerate. Checking only one device's memory
+        # (e.g. one of Kaggle's two T4s) understates real capacity and
+        # wrongly skips models that fit fine once sharded across both.
         available_vram_gb = (
-            torch.cuda.get_device_properties(0).total_memory / (1024**3) if gpu_available else 0.0
+            sum(torch.cuda.get_device_properties(index).total_memory for index in range(torch.cuda.device_count()))
+            / (1024**3)
+            if gpu_available
+            else 0.0
         )
     except ImportError:
         gpu_available = False

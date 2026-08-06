@@ -161,6 +161,20 @@ def test_preflight_cell_prints_only_credential_presence_booleans() -> None:
     assert "sk-" not in cell.source
 
 
+def test_preflight_computes_vram_across_every_visible_gpu() -> None:
+    """Kaggle sessions can have 2+ GPUs; ``device_map="auto"`` shards a model across all of them.
+
+    Checking only ``torch.cuda.get_device_properties(0)`` understates real
+    capacity on a multi-GPU session (e.g. Kaggle's dual T4) and wrongly
+    reports ``insufficient_vram`` for models that would fit once sharded
+    across every visible GPU.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    cell = _cell_for_stage(notebook, "preflight")
+    assert "sum(torch.cuda.get_device_properties(index).total_memory for index in range(" in cell.source
+    assert "torch.cuda.get_device_properties(0).total_memory" not in cell.source
+
+
 def test_run_cells_use_jsonl_checkpoint_store() -> None:
     notebook = nbformat.read(NOTEBOOK, as_version=4)
     for stage in ("pilot", "full_native"):
