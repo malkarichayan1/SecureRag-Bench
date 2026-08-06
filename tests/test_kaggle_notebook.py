@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+import types
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -299,6 +300,66 @@ def test_cpu_smoke_preflight_cell_never_prints_a_fake_secret_value(
     captured = capsys.readouterr()
     assert "totally-secret-value-should-not-print" not in captured.out
     assert "ANTHROPIC_API_KEY: True" in captured.out
+
+
+class _FakeUserSecretsClient:
+    """Stands in for ``kaggle_secrets.UserSecretsClient`` in tests.
+
+    Real behavior being modeled: attaching a secret in Kaggle's Secrets panel
+    does not create an environment variable -- it only becomes retrievable
+    through this client, and ``get_secret`` raises for a name that was never
+    attached.
+    """
+
+    def __init__(self, secrets: dict[str, str]) -> None:
+        self._secrets = secrets
+
+    def get_secret(self, name: str) -> str:
+        if name not in self._secrets:
+            raise LookupError(f"No user secret exists for key '{name}'")
+        return self._secrets[name]
+
+
+def test_cpu_smoke_preflight_cell_bridges_attached_kaggle_secrets_into_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reproduces a real gap: attaching a Kaggle Secret alone leaves ``os.environ`` empty.
+
+    Without a bridge, ``credential_presence`` reports ``False`` for a token
+    the user genuinely attached in Kaggle's UI. The preflight cell must pull
+    any attached secret into ``os.environ`` itself, without ever printing
+    the value, and must tolerate secrets that were never attached (they stay
+    absent, not an error).
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    namespace = _base_namespace(tmp_path, monkeypatch)
+
+    fake_module = types.ModuleType("kaggle_secrets")
+    fake_module.UserSecretsClient = lambda: _FakeUserSecretsClient(  # type: ignore[attr-defined]
+        {"HF_TOKEN": "fake-hf-secret-value-should-not-print"}
+    )
+    monkeypatch.setitem(sys.modules, "kaggle_secrets", fake_module)
+
+    preflight_cell = next(cell for cell in notebook.cells if cell.metadata.get("stage") == "preflight")
+    try:
+        _exec_cell(preflight_cell, namespace)
+
+        import os
+
+        assert os.environ["HF_TOKEN"] == "fake-hf-secret-value-should-not-print"
+        assert namespace["credential_presence"] == {
+            "ANTHROPIC_API_KEY": False,
+            "OPENAI_API_KEY": False,
+            "HF_TOKEN": True,
+        }
+        captured = capsys.readouterr()
+        assert "fake-hf-secret-value-should-not-print" not in captured.out
+        assert "HF_TOKEN: True" in captured.out
+    finally:
+        # The preflight cell mutates real os.environ directly (that's the
+        # behavior under test), bypassing monkeypatch's own tracking -- undo
+        # it explicitly so this fake secret can't leak into later tests.
+        monkeypatch.delenv("HF_TOKEN", raising=False)
 
 
 def test_cpu_smoke_pilot_writes_manifest_and_gate_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

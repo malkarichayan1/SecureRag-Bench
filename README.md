@@ -145,15 +145,20 @@ runs to unblock it.
 3. **Hugging Face license and token setup.** `meta-llama/Llama-3.1-8B-Instruct`
    is a gated Hugging Face model: accept its license on the model page with
    the Hugging Face account you intend to use, then add that account's access
-   token as a Kaggle Secret named `HF_TOKEN` and expose it to the notebook's
-   environment (Kaggle's Secrets panel -> Attach to notebook). Never type a
-   token literally into a cell. `Qwen/Qwen2.5-*` catalog entries are not
-   gated and do not require a token, but leaving `HF_TOKEN` set is harmless.
+   token as a Kaggle Secret named `HF_TOKEN` and attach it to the notebook
+   (Kaggle's Secrets panel -> Attach to notebook). Attaching alone does not
+   create an environment variable -- Kaggle only makes an attached secret
+   retrievable through `kaggle_secrets.UserSecretsClient`, so the preflight
+   cell reads any attached `HF_TOKEN`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
+   secret through that client and copies it into `os.environ` itself before
+   reporting credential presence. Never type a token literally into a cell.
+   `Qwen/Qwen2.5-*` catalog entries are not gated and do not require a token,
+   but leaving `HF_TOKEN` set is harmless.
 4. **Optional credentials.** The `llama-3.1-70b-endpoint` and `claude` catalog
    entries are `enabled: false` by default and only usable if attempted
    explicitly; they need `OPENAI_API_KEY` (OpenAI-compatible endpoint) or
-   `ANTHROPIC_API_KEY` respectively, set the same way as `HF_TOKEN` -- as a
-   Kaggle Secret, never hardcoded. A model whose required credential is
+   `ANTHROPIC_API_KEY` respectively, attached the same way as `HF_TOKEN` -- as
+   a Kaggle Secret, never hardcoded. A model whose required credential is
    absent is recorded with `status: "skipped"` and a `missing_credential:*`
    reason and excluded from the run rather than causing a failure.
 5. **Read the preflight cell's output.** Stage 1 (`preflight`) prints GPU

@@ -217,9 +217,33 @@ _CELL_PREFLIGHT = _source(
     TEST_ADAPTER_FACTORY = globals().get("TEST_ADAPTER_FACTORY")
     FULL_STAGE_CASE_IDS = globals().get("FULL_STAGE_CASE_IDS")
 
+    CREDENTIAL_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HF_TOKEN")
+
+    # Attaching a secret in Kaggle's Secrets panel does NOT create an
+    # environment variable -- it only makes the value retrievable through
+    # kaggle_secrets.UserSecretsClient. Bridge any attached secret into
+    # os.environ here so the rest of the notebook (and library code that
+    # reads os.environ) sees it. A secret that isn't attached, or running
+    # outside Kaggle entirely, is expected and silently skipped -- never
+    # surface the value or a lookup exception's text either way.
+    try:
+        from kaggle_secrets import UserSecretsClient
+
+        _user_secrets = UserSecretsClient()
+        for _cred_name in CREDENTIAL_ENV_VARS:
+            if os.environ.get(_cred_name):
+                continue
+            try:
+                _secret_value = _user_secrets.get_secret(_cred_name)
+            except Exception:
+                continue
+            if _secret_value:
+                os.environ[_cred_name] = _secret_value
+    except ImportError:
+        pass
+
     # Print presence only -- a credential's value must never appear in a
     # notebook cell's output, a saved artifact, or an exception message.
-    CREDENTIAL_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HF_TOKEN")
     credential_presence = {name: bool(os.environ.get(name)) for name in CREDENTIAL_ENV_VARS}
     print("credential presence (booleans only; values are never printed):")
     for _name, _present in credential_presence.items():
