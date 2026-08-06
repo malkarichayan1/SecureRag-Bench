@@ -137,8 +137,9 @@ runs to unblock it.
    or attach this repository as a Kaggle Dataset/Notebook and open it from
    there. The first code cell clones this study's branch of the repository
    (if `pyproject.toml` is not already present -- the study's code lives on
-   `codex/native-validity-adaptive`, not the default branch) and installs
-   the `local-injecagent` extra.
+   `codex/native-validity-adaptive`, not the default branch), initializes
+   the `data/external/InjecAgent` git submodule (the official benchmark
+   dataset), and installs the `local-injecagent` extra.
 2. **Enable a GPU accelerator.** Under Kaggle's Notebook Settings, set
    Accelerator to a GPU before running the pilot or full-native stages; the
    `transformers`-backed catalog models (`qwen-7b`, `qwen-14b`,

@@ -114,18 +114,29 @@ _CELL_SETUP = _source(
     # repository's default branch -- cloning without --branch silently
     # checks out a tree missing this study's code entirely, which then only
     # surfaces several cells later as a confusing ModuleNotFoundError.
+    #
+    # data/external/InjecAgent is a git submodule (the official benchmark
+    # dataset, not vendored into this repo). A plain clone leaves it as an
+    # empty placeholder -- pass --recurse-submodules on a fresh clone, and
+    # separately run `git submodule update --init` in case a checkout from
+    # an earlier, unfixed run of this cell already exists without it.
     import pathlib
 
     SOURCE_GIT_REF = "codex/native-validity-adaptive"
+    INJECAGENT_MARKER = pathlib.Path("data/external/InjecAgent/data/test_cases_dh_base.json")
 
     if not pathlib.Path("pyproject.toml").exists():
         get_ipython().system(
             f"git clone --depth 1 --branch {SOURCE_GIT_REF} "
+            "--recurse-submodules --shallow-submodules "
             "https://github.com/malkarichayan1/SecureRag-Bench.git "
             "/tmp/securerag-bench-src "
             "&& cp -a /tmp/securerag-bench-src/. . "
             "&& rm -rf /tmp/securerag-bench-src"
         )
+
+    if not INJECAGENT_MARKER.exists():
+        get_ipython().system("git submodule update --init --depth 1")
 
     get_ipython().system("pip install -q -e .[local-injecagent]")
 
@@ -137,6 +148,12 @@ _CELL_SETUP = _source(
             "setup failed: src/secure_rag_bench/evaluation/native_cases.py is missing after "
             f"clone+install from branch '{SOURCE_GIT_REF}'. Check the git/pip output above for "
             "the underlying error before continuing to later cells."
+        )
+    if not INJECAGENT_MARKER.exists():
+        raise RuntimeError(
+            f"setup failed: {INJECAGENT_MARKER} is missing after clone+submodule-init. "
+            "data/external/InjecAgent is a git submodule; check the git output above for the "
+            "underlying error before continuing to later cells."
         )
     """
 )

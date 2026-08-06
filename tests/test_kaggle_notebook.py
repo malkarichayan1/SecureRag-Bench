@@ -133,6 +133,24 @@ def test_setup_cell_fails_fast_if_the_checkout_is_missing_study_code() -> None:
     assert "raise RuntimeError(" in cell.source
 
 
+def test_setup_cell_initializes_the_injecagent_submodule() -> None:
+    """``data/external/InjecAgent`` is a git submodule, not vendored data.
+
+    A plain ``git clone`` (even with ``--branch``) leaves a submodule as an
+    empty placeholder directory unless it is also told to recurse into
+    submodules, or ``git submodule update --init`` is run afterward. Without
+    either, the pilot cell's ``load_native_cases`` fails with a
+    ``FileNotFoundError`` on the benchmark's JSON files, several cells after
+    the setup cell reported success.
+    """
+    notebook = nbformat.read(NOTEBOOK, as_version=4)
+    cell = next(cell for cell in notebook.cells if cell.get("id") == "cell-setup")
+    assert "--recurse-submodules" in cell.source
+    assert "git submodule update --init" in cell.source
+    assert "test_cases_dh_base.json" in cell.source
+    assert cell.source.count("raise RuntimeError(") == 2
+
+
 def test_preflight_cell_prints_only_credential_presence_booleans() -> None:
     notebook = nbformat.read(NOTEBOOK, as_version=4)
     cell = _cell_for_stage(notebook, "preflight")
