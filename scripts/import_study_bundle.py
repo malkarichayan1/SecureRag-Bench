@@ -54,6 +54,35 @@ exactly the seven characters the implementation plan enumerates: ``\\ % _ &
 # { }``. It deliberately does not also escape ``$``, ``^``, or ``~`` --
 match the plan's literal list, not the full set of LaTeX-special
 characters.
+
+## Headline macros and plot data (for paper/urtc's manuscript, Task 5)
+
+Two further output families exist purely so ``paper/urtc/main.tex`` never
+hand-writes a validated number:
+
+- ``macros.tex`` -- one ``\\newcommand`` per headline claim
+  (``\\NativeBestValidity``, ``\\NativeModelCount``, ``\\AdaptiveFullASR``,
+  ``\\ASTBenignUtility``), each computed from the same ``PaperTables`` the
+  detail tables render. Unlike the detail tables, which render an explicit
+  ``(no rows)`` placeholder for an empty table (a legitimate state -- e.g. no
+  configuration cleared the validity gate), a headline macro has no sensible
+  empty rendering: "the best validity was (no rows)%" is not a claim anyone
+  can cite. Each macro's builder therefore raises ``BundleImportError`` if its
+  source table has zero rows, aborting the whole import (leaving
+  ``--output-dir`` untouched, per the existing atomic-replace contract) rather
+  than emit a placeholder a reader could mistake for a result.
+- ``native_validity_plot.tex`` / ``adaptive_results_plot.tex`` -- complete,
+  self-contained ``tikzpicture``/``pgfplots`` bodies (not bare
+  ``\\addplot`` fragments) for the two new manuscript figures, built the same
+  way ``_tex_table`` builds a complete ``table`` environment: this script
+  computes the exact bar coordinates and symbolic x-coordinate list, so the
+  figure file never has to reconcile a hand-written axis against generated
+  data. Empty source tables raise the same way the macros do.
+
+Both are re-derived from ``build_paper_tables``'/``build_plot_series``'
+already-validated rows -- neither reads the filesystem or ``bundle.json``
+again -- and both are covered by the same ``MANIFEST.sha256`` this script
+already writes over every file in the output directory.
 """
 
 from __future__ import annotations
@@ -81,6 +110,7 @@ from secure_rag_bench.evaluation.study_reporting import (
     PaperTables,
     ValidatedStudyBundle,
     build_paper_tables,
+    build_plot_series,
     validate_study_bundle,
 )
 
@@ -188,6 +218,7 @@ def _tex_table(*, caption: str, label: str, column_spec: str, header: Sequence[s
     lines = [
         r"\begin{table}[htbp]",
         r"  \centering",
+        r"  \footnotesize",
         rf"  \caption{{{escape_latex(caption)}}}",
         rf"  \label{{{label}}}",
         rf"  \begin{{tabular}}{{{column_spec}}}",
@@ -449,18 +480,229 @@ def _rejection_categories_csv_rows(rows: Sequence[ASTCompatibilityRow]) -> Itera
 
 
 # ---------------------------------------------------------------------------
+# Headline macros (macros.tex)
+#
+# Each builder raises ``BundleImportError`` on an empty source table instead
+# of rendering a placeholder -- see the module docstring's "Headline macros
+# and plot data" section for why this is intentionally stricter than the
+# detail tables above.
+# ---------------------------------------------------------------------------
+
+
+def _require_rows(rows: Sequence[Any], *, table: str) -> Sequence[Any]:
+    if not rows:
+        raise BundleImportError(
+            f"cannot compute headline manuscript claims: the {table!r} table has no "
+            "completed rows in this bundle"
+        )
+    return rows
+
+
+def _native_best_validity_value(rows: Sequence[NativeValidityRow]) -> float:
+    rows = _require_rows(rows, table="native_validity")
+    return max(row.protocol_valid_rate for row in rows)
+
+
+def _native_model_count_value(rows: Sequence[NativeValidityRow]) -> int:
+    rows = _require_rows(rows, table="native_validity")
+    return len({row.model for row in rows})
+
+
+def _adaptive_full_asr_value(rows: Sequence[AdaptiveMonitorRow]) -> float:
+    full_monitor_rows = [
+        row for row in rows if row.monitor == "full_monitor" and row.target_effect_asr is not None
+    ]
+    if not full_monitor_rows:
+        raise BundleImportError(
+            "cannot compute headline manuscript claims: the 'adaptive_monitor' table has no "
+            "full_monitor row with a defined target-effect ASR in this bundle"
+        )
+    return max(row.target_effect_asr for row in full_monitor_rows)
+
+
+def _ast_benign_utility_value(rows: Sequence[ASTCompatibilityRow]) -> float:
+    rows = _require_rows(rows, table="ast_compatibility")
+    return min(row.execution_rate for row in rows)
+
+
+#: Macro name -> raw-value builder. ``_headline_macro_values`` runs every
+#: builder eagerly (rather than lazily formatting one at a time) so an empty
+#: source table is reported for *every* affected macro in one import attempt,
+#: not discovered one ``BundleImportError`` at a time across repeated runs.
+_HEADLINE_MACRO_BUILDERS: Mapping[str, Any] = {
+    "NativeBestValidity": lambda tables: _native_best_validity_value(tables.native_validity),
+    "NativeModelCount": lambda tables: _native_model_count_value(tables.native_validity),
+    "AdaptiveFullASR": lambda tables: _adaptive_full_asr_value(tables.adaptive_monitor),
+    "ASTBenignUtility": lambda tables: _ast_benign_utility_value(tables.ast_compatibility),
+}
+
+
+def _headline_macro_values(tables: PaperTables) -> dict[str, float | int]:
+    """Raw (unrounded) headline values, keyed by macro name.
+
+    Written into ``summary.json["headline_macros"]`` so a traceability sheet
+    can point at one JSON key instead of re-deriving what ``macros.tex``'s
+    rounded LaTeX string means.
+    """
+    errors: list[str] = []
+    values: dict[str, float | int] = {}
+    for name, builder in _HEADLINE_MACRO_BUILDERS.items():
+        try:
+            values[name] = builder(tables)
+        except BundleImportError as error:
+            errors.append(f"{name}: {error}")
+    if errors:
+        raise BundleImportError("; ".join(errors))
+    return values
+
+
+def _format_macro_value(name: str, value: float | int) -> str:
+    if name == "NativeModelCount":
+        return str(value)
+    return f"{value * 100:.2f}\\%"
+
+
+def _macros_tex(headline_macros: Mapping[str, float | int]) -> str:
+    """Render the headline ``\\newcommand`` macros ``main.tex`` may cite.
+
+    ``main.tex`` must use only these macros for *new* numeric claims (the
+    plan's Step 3); it must never hand-write a number this script could
+    generate instead. Takes the already-computed raw values (see
+    ``_headline_macro_values``) rather than ``PaperTables`` directly, so the
+    caller decides once whether an empty source table aborts the import --
+    this function only formats.
+    """
+    lines = [
+        f"\\newcommand{{\\{name}}}{{{_format_macro_value(name, value)}}}"
+        for name, value in headline_macros.items()
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Figure plot data (native_validity_plot.tex, adaptive_results_plot.tex)
+# ---------------------------------------------------------------------------
+
+#: Fixed, meaningful display order for the three monitor configurations the
+#: adaptive study runs (``MonitorConfiguration`` in ``adaptive_runner.py``).
+#: A monitor absent from the bundle's rows is simply skipped, never invented.
+_MONITOR_ORDER = ("no_monitor", "policy_only", "full_monitor")
+_MONITOR_LABELS = {
+    "no_monitor": "No monitor",
+    "policy_only": "Policy only",
+    "full_monitor": "Full monitor",
+}
+#: Base hue per monitor; ``fill={hue}!{pct}`` / ``draw={hue}!70!black`` mirrors
+#: the ``blue!55`` / ``orange!70`` fill idiom already used in
+#: ``figures/ablation_results.tex``.
+_MONITOR_HUES = {"no_monitor": "gray", "policy_only": "orange", "full_monitor": "blue"}
+_MONITOR_FILL_PERCENT = {"no_monitor": 45, "policy_only": 70, "full_monitor": 55}
+
+_PLOT_AXIS_COMMON = (
+    "      width=\\columnwidth,\n"
+    "      height=4.25cm,\n"
+    "      ybar,\n"
+    "      bar width=6pt,\n"
+    "      ymin=0,\n"
+    "      ymax=105,\n"
+    "      y tick label style={font=\\scriptsize},\n"
+    "      ylabel style={font=\\scriptsize},\n"
+    "      nodes near coords,\n"
+    "      every node near coord/.append style={font=\\tiny},\n"
+    "      grid=major,\n"
+    "      grid style={gray!20}\n"
+)
+
+
+def _native_validity_plot_tex(rows: Sequence[NativeValidityRow]) -> str:
+    rows = _require_rows(rows, table="native_validity")
+    labels = ",".join(escape_latex(row.configuration_id) for row in rows)
+    coordinates = " ".join(
+        f"({escape_latex(row.configuration_id)},{row.protocol_valid_rate * 100:.2f})" for row in rows
+    )
+    return (
+        "\\begin{tikzpicture}\n"
+        "  \\begin{axis}[\n"
+        f"      ylabel={{Protocol Valid (\\%)}},\n"
+        f"      symbolic x coords={{{labels}}},\n"
+        "      xtick=data,\n"
+        "      x tick label style={font=\\scriptsize, rotate=25, anchor=east},\n"
+        "      enlarge x limits=0.15,\n"
+        f"{_PLOT_AXIS_COMMON}"
+        "    ]\n"
+        f"    \\addplot+[fill=blue!55, draw=blue!70!black] coordinates {{{coordinates}}};\n"
+        "  \\end{axis}\n"
+        "\\end{tikzpicture}\n"
+    )
+
+
+def _adaptive_results_plot_tex(rows: Sequence[AdaptiveMonitorRow]) -> str:
+    rows = _require_rows(rows, table="adaptive_monitor")
+    families = sorted({row.family for row in rows})
+    by_key = {(row.family, row.monitor): row for row in rows}
+    present_monitors = [monitor for monitor in _MONITOR_ORDER if any(key[1] == monitor for key in by_key)]
+    family_labels = ",".join(escape_latex(family) for family in families)
+
+    plot_lines = []
+    legend_entries = []
+    for monitor in present_monitors:
+        hue = _MONITOR_HUES[monitor]
+        fill = f"{hue}!{_MONITOR_FILL_PERCENT[monitor]}"
+        draw = f"{hue}!70!black"
+        points = []
+        for family in families:
+            row = by_key.get((family, monitor))
+            if row is None or row.target_effect_asr is None:
+                continue
+            points.append(f"({escape_latex(family)},{row.target_effect_asr * 100:.2f})")
+        plot_lines.append(
+            f"      \\addplot+[fill={fill}, draw={draw}] coordinates {{{' '.join(points)}}};"
+        )
+        legend_entries.append(escape_latex(_MONITOR_LABELS[monitor]))
+
+    body = "\n".join(plot_lines)
+    legend = ",".join(legend_entries)
+    return (
+        "\\begin{tikzpicture}\n"
+        "  \\begin{axis}[\n"
+        f"      ylabel={{Target-Effect ASR (\\%)}},\n"
+        f"      symbolic x coords={{{family_labels}}},\n"
+        "      xtick=data,\n"
+        "      x tick label style={font=\\scriptsize, rotate=18, anchor=east},\n"
+        "      enlarge x limits=0.25,\n"
+        "      legend style={font=\\scriptsize, at={(0.5,1.02)}, anchor=south,"
+        " legend columns=3, draw=none},\n"
+        f"{_PLOT_AXIS_COMMON}"
+        "    ]\n"
+        f"{body}\n"
+        f"      \\legend{{{legend}}}\n"
+        "  \\end{axis}\n"
+        "\\end{tikzpicture}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # summary.json
 # ---------------------------------------------------------------------------
 
 
-def _build_summary(bundle: ValidatedStudyBundle, tables: PaperTables, *, source_archive: str) -> dict[str, Any]:
+def _build_summary(
+    bundle: ValidatedStudyBundle,
+    tables: PaperTables,
+    *,
+    source_archive: str,
+    headline_macros: Mapping[str, float | int],
+) -> dict[str, Any]:
     """A plain-JSON summary carrying every row's raw (unrounded) numbers.
 
     ``native_validity``/``adaptive_monitor``/``ast_compatibility`` are exact
     ``dataclasses.asdict`` dumps of the corresponding ``PaperTables`` tuple,
     so nothing here is ever a rounded display string -- a downstream script
     that wants a specific number reads it directly rather than reparsing a
-    formatted cell.
+    formatted cell. ``headline_macros`` mirrors ``macros.tex`` as raw floats
+    (unrounded, unformatted) keyed by macro name, so a traceability sheet can
+    cite ``summary.json["headline_macros"]["NativeBestValidity"]`` as the
+    exact source of the LaTeX macro's rounded ``\\%`` string.
     """
     return {
         "schema_version": 1,
@@ -475,6 +717,7 @@ def _build_summary(bundle: ValidatedStudyBundle, tables: PaperTables, *, source_
         "native_validity": [asdict(row) for row in tables.native_validity],
         "adaptive_monitor": [asdict(row) for row in tables.adaptive_monitor],
         "ast_compatibility": [asdict(row) for row in tables.ast_compatibility],
+        "headline_macros": dict(headline_macros),
     }
 
 
@@ -489,6 +732,30 @@ def _write_csv(path: Path, header: Sequence[str], rows: Iterable[Sequence[Any]])
         writer.writerow(header)
         for row in rows:
             writer.writerow(row)
+
+
+_PLOT_SERIES_HEADERS: Mapping[str, Sequence[str]] = {
+    "native_protocol_validity": [
+        "configuration_id", "model", "setting", "prompt_condition", "count", "denominator", "rate", "lower", "upper",
+    ],
+    "adaptive_asr_by_monitor": ["run_id", "family", "monitor", "count", "denominator", "rate", "lower", "upper"],
+    "ast_acceptance_by_family": ["run_id", "model", "family", "count", "denominator", "rate", "lower", "upper"],
+}
+
+
+def _write_plot_series_csvs(staging: Path, bundle: ValidatedStudyBundle) -> None:
+    """Write ``build_plot_series``'s three flat series as ``plot_<name>.csv``.
+
+    Not consumed by the two new figures directly (those read the richer
+    ``native_validity_plot.tex``/``adaptive_results_plot.tex`` this script
+    also writes), but kept as plain, independently-checkable CSV so a future
+    figure or an external plotting script never has to re-derive a series
+    ``build_plot_series`` already exposes.
+    """
+    series = build_plot_series(bundle)
+    for name, header in _PLOT_SERIES_HEADERS.items():
+        rows = ([point[key] for key in header] for point in series[name])
+        _write_csv(staging / f"plot_{name}.csv", header, rows)
 
 
 def _write_outputs(staging: Path, bundle: ValidatedStudyBundle, tables: PaperTables, *, source_archive: str) -> None:
@@ -515,7 +782,17 @@ def _write_outputs(staging: Path, bundle: ValidatedStudyBundle, tables: PaperTab
         _rejection_categories_csv_rows(tables.ast_compatibility),
     )
 
-    summary = _build_summary(bundle, tables, source_archive=source_archive)
+    headline_macros = _headline_macro_values(tables)
+    (staging / "macros.tex").write_text(_macros_tex(headline_macros), encoding="utf-8")
+    (staging / "native_validity_plot.tex").write_text(
+        _native_validity_plot_tex(tables.native_validity), encoding="utf-8"
+    )
+    (staging / "adaptive_results_plot.tex").write_text(
+        _adaptive_results_plot_tex(tables.adaptive_monitor), encoding="utf-8"
+    )
+    _write_plot_series_csvs(staging, bundle)
+
+    summary = _build_summary(bundle, tables, source_archive=source_archive, headline_macros=headline_macros)
     (staging / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
 

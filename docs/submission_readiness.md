@@ -40,3 +40,38 @@
 - Visually inspect the final PDF after applying the confirmed template.
 - The current local PDF text was checked after regeneration; its final visual
   review remains pending because the official template is not yet confirmed.
+
+## `paper/urtc/main.tex` native-validity manuscript: status BLOCKED
+
+This is a second, separate manuscript (`paper/urtc/main.tex`, built with
+`make -C paper/urtc pdf`) from the offline draft covered above. It reports
+native-validity, restricted-AST-compatibility, and adaptive-attack results
+generated from a validated Kaggle study bundle
+(`scripts/import_study_bundle.py`; mapping in `docs/claim_traceability.md`).
+
+**Submission is BLOCKED** on both of the following, neither of which is done:
+
+1. **A real, validated Kaggle study bundle has not been imported.**
+   `paper/generated/` currently contains only `.gitkeep`. Until
+   `python scripts/import_study_bundle.py <bundle.zip> --output-dir
+   paper/generated` has been run against a real bundle that passes
+   `validate_study_bundle`, `paper/urtc/Makefile`'s `pdf` target refuses to
+   build (`scripts/check_generated_manuscript_inputs.py` fails on purpose;
+   see `docs/claim_traceability.md`'s verification procedure) and every
+   headline macro/table/figure this manuscript would report is undefined.
+2. **The rendered PDF has not passed review.** Nobody has visually or
+   textually reviewed `output/pdf/securerag_bench_urtc_draft.pdf` against
+   this repository's claim-traceability sheet, because it cannot yet be
+   built (step 1).
+
+Tests exercise the `\input` machinery, the headline-macro generation, and
+the Makefile's missing-input guard only against synthetic **fixture**
+bundles confined to `tmp_path`/`tmp/`
+(`tests/test_urtc_latex_pdf.py`, `tests/test_study_bundle_scripts.py`). A
+fixture bundle passing these tests is evidence the pipeline works, not that
+a real study has run — do not cite fixture numbers, fixture model names, or
+fixture-derived PDF output as a manuscript result anywhere outside `tmp/`.
+
+**Do not submit `paper/urtc/main.tex` until both items above are resolved**
+and every claim in it has been checked against
+`docs/claim_traceability.md`'s `paper/urtc/main.tex` table.

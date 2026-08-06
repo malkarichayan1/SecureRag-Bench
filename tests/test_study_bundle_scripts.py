@@ -20,13 +20,28 @@ import stat
 import subprocess
 import sys
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-from secure_rag_bench.evaluation.study_reporting import build_paper_tables, validate_study_bundle
+from secure_rag_bench.evaluation.study_reporting import (
+    AdaptiveMonitorRow,
+    ASTCompatibilityRow,
+    NativeValidityRow,
+    PaperTables,
+    build_paper_tables,
+    validate_study_bundle,
+)
+from scripts.import_study_bundle import (
+    BundleImportError,
+    _adaptive_full_asr_value,
+    _ast_benign_utility_value,
+    _headline_macro_values,
+    _native_best_validity_value,
+    _native_model_count_value,
+)
 from tests.test_study_reporting import corrupt_one_record, fixture_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -215,6 +230,235 @@ def test_latex_escapes_underscores_and_other_special_characters(tmp_path: Path) 
     assert r"strict\_react" in text
     assert r"\begin{table}" in text
     assert r"\end{table}" in text
+
+
+# ---------------------------------------------------------------------------
+# Task 5: headline macros and figure plot data (macros.tex,
+# native_validity_plot.tex, adaptive_results_plot.tex)
+# ---------------------------------------------------------------------------
+
+_WILSON = {"lower": 0.0, "upper": 1.0}
+
+
+def _native_validity_row(**overrides) -> NativeValidityRow:
+    base = NativeValidityRow(
+        configuration_id="cfg-1",
+        model="model-a",
+        tier="primary",
+        model_id="model-a-id",
+        setting="base",
+        prompt_condition="strict_react",
+        held_out_denominator=50,
+        held_out_protocol_valid_count=46,
+        held_out_protocol_valid_rate=0.92,
+        held_out_protocol_valid_wilson_95=_WILSON,
+        gate_passed=True,
+        case_count=70,
+        syntax_valid_count=68,
+        syntax_valid_rate=0.9714,
+        syntax_valid_wilson_95=_WILSON,
+        protocol_valid_count=64,
+        protocol_valid_rate=0.9143,
+        protocol_valid_wilson_95=_WILSON,
+        official_asr_valid_count=0,
+        official_asr_valid_denominator=64,
+        official_asr_valid_rate=0.0,
+        official_asr_valid_wilson_95=_WILSON,
+        official_asr_all_count=0,
+        official_asr_all_rate=0.0,
+        official_asr_all_wilson_95=_WILSON,
+        execution_asr=(),
+    )
+    return replace(base, **overrides)
+
+
+def _adaptive_monitor_row(**overrides) -> AdaptiveMonitorRow:
+    base = AdaptiveMonitorRow(
+        run_id="adaptive-1",
+        family="direct_injection",
+        monitor="full_monitor",
+        case_count=4,
+        attack_count=2,
+        control_count=2,
+        retrieval_exposure_count=2,
+        retrieval_exposure_rate=1.0,
+        retrieval_exposure_wilson_95=_WILSON,
+        attempted_target_action_count=2,
+        attempted_target_action_rate=1.0,
+        attempted_target_action_wilson_95=_WILSON,
+        halt_count=2,
+        halt_rate=1.0,
+        halt_rate_wilson_95=_WILSON,
+        target_effect_asr_count=0,
+        target_effect_asr_denominator=2,
+        target_effect_asr=0.0,
+        target_effect_asr_wilson_95=_WILSON,
+        benign_utility_count=2,
+        benign_utility_denominator=2,
+        benign_utility=1.0,
+        benign_utility_wilson_95=_WILSON,
+    )
+    return replace(base, **overrides)
+
+
+def _ast_compatibility_row(**overrides) -> ASTCompatibilityRow:
+    base = ASTCompatibilityRow(
+        run_id="ast-1",
+        model="model-a",
+        family="email",
+        case_count=3,
+        accepted_count=2,
+        acceptance_rate=0.6667,
+        acceptance_wilson_95=_WILSON,
+        execution_count=1,
+        execution_rate=0.3333,
+        execution_wilson_95=_WILSON,
+        rejection_categories=(),
+    )
+    return replace(base, **overrides)
+
+
+def test_native_best_validity_value_is_the_max_protocol_valid_rate() -> None:
+    rows = (
+        _native_validity_row(configuration_id="a", protocol_valid_rate=0.5),
+        _native_validity_row(configuration_id="b", protocol_valid_rate=0.9),
+    )
+
+    assert _native_best_validity_value(rows) == 0.9
+
+
+def test_native_best_validity_value_raises_a_clear_error_on_an_empty_table() -> None:
+    with pytest.raises(BundleImportError, match="native_validity"):
+        _native_best_validity_value(())
+
+
+def test_native_model_count_value_counts_distinct_models_not_configurations() -> None:
+    rows = (
+        _native_validity_row(configuration_id="a", model="model-a"),
+        _native_validity_row(configuration_id="b", model="model-b"),
+        _native_validity_row(configuration_id="c", model="model-a"),
+    )
+
+    assert _native_model_count_value(rows) == 2
+
+
+def test_adaptive_full_asr_value_ignores_non_full_monitor_rows() -> None:
+    rows = (
+        _adaptive_monitor_row(monitor="no_monitor", target_effect_asr=1.0),
+        _adaptive_monitor_row(monitor="full_monitor", target_effect_asr=0.25),
+    )
+
+    assert _adaptive_full_asr_value(rows) == 0.25
+
+
+def test_adaptive_full_asr_value_is_the_worst_full_monitor_family() -> None:
+    rows = (
+        _adaptive_monitor_row(family="direct_injection", monitor="full_monitor", target_effect_asr=0.1),
+        _adaptive_monitor_row(family="split_payload", monitor="full_monitor", target_effect_asr=0.4),
+    )
+
+    assert _adaptive_full_asr_value(rows) == 0.4
+
+
+def test_adaptive_full_asr_value_raises_when_no_full_monitor_row_has_a_defined_asr() -> None:
+    rows = (
+        _adaptive_monitor_row(monitor="full_monitor", target_effect_asr=None, target_effect_asr_denominator=0),
+    )
+
+    with pytest.raises(BundleImportError, match="full_monitor"):
+        _adaptive_full_asr_value(rows)
+
+
+def test_ast_benign_utility_value_is_the_min_execution_rate() -> None:
+    rows = (
+        _ast_compatibility_row(family="email", execution_rate=0.8),
+        _ast_compatibility_row(family="banking", execution_rate=0.3),
+    )
+
+    assert _ast_benign_utility_value(rows) == 0.3
+
+
+def test_ast_benign_utility_value_raises_a_clear_error_on_an_empty_table() -> None:
+    with pytest.raises(BundleImportError, match="ast_compatibility"):
+        _ast_benign_utility_value(())
+
+
+def test_headline_macro_values_reports_every_empty_table_in_one_error() -> None:
+    empty_tables = PaperTables(native_validity=(), adaptive_monitor=(), ast_compatibility=())
+
+    with pytest.raises(BundleImportError) as excinfo:
+        _headline_macro_values(empty_tables)
+
+    message = str(excinfo.value)
+    assert "NativeBestValidity" in message
+    assert "NativeModelCount" in message
+    assert "AdaptiveFullASR" in message
+    assert "ASTBenignUtility" in message
+
+
+def test_import_writes_headline_macros_and_figure_plot_data(tmp_path: Path) -> None:
+    archive = export_fixture_bundle(tmp_path)
+    output_dir = tmp_path / "generated"
+
+    result = run_import(archive, output_dir)
+
+    assert result.exit_code == 0, result.stderr
+    for name in (
+        "macros.tex",
+        "native_validity_plot.tex",
+        "adaptive_results_plot.tex",
+        "plot_native_protocol_validity.csv",
+        "plot_adaptive_asr_by_monitor.csv",
+        "plot_ast_acceptance_by_family.csv",
+    ):
+        assert (output_dir / name).is_file(), f"missing {name}"
+
+    macros_text = (output_dir / "macros.tex").read_text(encoding="utf-8")
+    for macro in (r"\NativeBestValidity", r"\NativeModelCount", r"\AdaptiveFullASR", r"\ASTBenignUtility"):
+        assert f"\\newcommand{{{macro}}}" in macros_text
+
+    plot_text = (output_dir / "native_validity_plot.tex").read_text(encoding="utf-8")
+    assert r"\begin{tikzpicture}" in plot_text
+    assert r"\addplot+" in plot_text
+
+    assert verify_manifest(output_dir / "MANIFEST.sha256")
+
+
+def test_summary_json_headline_macros_match_the_raw_values_macros_tex_rounds(tmp_path: Path) -> None:
+    bundle_root = fixture_bundle(tmp_path).root
+    expected = _headline_macro_values(build_paper_tables(validate_study_bundle(bundle_root)))
+
+    archive = tmp_path / "bundle.zip"
+    assert run_export(bundle_root, archive).exit_code == 0
+    output_dir = tmp_path / "generated"
+    assert run_import(archive, output_dir).exit_code == 0
+
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    headline_macros = summary["headline_macros"]
+
+    assert headline_macros.keys() == expected.keys()
+    for name, value in expected.items():
+        assert headline_macros[name] == pytest.approx(value)
+
+
+def test_import_aborts_and_leaves_output_untouched_when_native_validity_table_is_empty(tmp_path: Path) -> None:
+    """A configuration whose pilot never clears the gate produces an empty
+    ``native_validity`` table; the import must abort with a clear message
+    naming the affected macros instead of writing manuscript inputs with a
+    missing headline claim (the plan's "stop with a clear message rather
+    than insert substitute result text")."""
+    archive = export_fixture_bundle(tmp_path, qualifying=False)
+    output_dir = tmp_path / "generated"
+    output_dir.mkdir()
+    sentinel = output_dir / "sentinel.txt"
+    sentinel.write_text("keep me", encoding="utf-8")
+
+    result = run_import(archive, output_dir)
+
+    assert result.exit_code != 0
+    assert "native_validity" in result.stderr
+    assert sentinel.read_text(encoding="utf-8") == "keep me"
+    assert not (output_dir / "macros.tex").exists()
 
 
 # ---------------------------------------------------------------------------
